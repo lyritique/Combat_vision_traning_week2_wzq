@@ -1,3 +1,5 @@
 build/
 Project_materials/
-.clangd
+.clangd 
+.cache
+output/
