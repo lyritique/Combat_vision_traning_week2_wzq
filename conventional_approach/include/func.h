@@ -142,7 +142,47 @@ cv::Mat extractNumber(const cv::Mat& bgr, const ArmorCandidate& armor, bool larg
  */
 DigitResult classify(const cv::Mat& input, const std::string& model_path = "models/mlp.onnx");
 
-void correctCorners();
-void eraseIgnoreClasses();
-void positionSolve();
+// 一块装甲板的完整检测结果
+struct ArmorDetection
+{
+    ArmorCandidate armor;   // 配对结果（含固定顺序的四角点）
+    ArmorPose      pose;    // 位置解算结果
+    DigitResult    digit;   // 数字识别结果
+};
+
+// 单帧的完整结果
+struct FrameResult
+{
+    std::vector<LightBar>       bars;     // findLights 的输出（画图要用）
+    std::vector<ArmorDetection> armors;   // 配对 + 数字识别 + 位置解算
+};
+
+/**
+ * @brief 单帧流水线：预处理 → 找灯条 → 配对 → 数字识别 → 位置解算
+ *
+ * 图片和视频共用这一条链路，区别只在传进来的 CameraParams：
+ * 静态图用 cameraImages()（960×720），视频用 cameraVideo()（1440×1080）。
+ * 内参和分辨率绑定，混用会让 z 系统性偏掉。
+ *
+ * @param model_path 数字识别模型路径；传空字符串表示跳过数字识别
+ */
+FrameResult processFrame(const cv::Mat& bgr, const CameraParams& cam, LightColor color,
+                         int diff_thresh, const std::string& model_path = "models/mlp.onnx");
+
+/**
+ * @brief 剔除无效候选
+ *
+ * 三条规则：判为 negative（板面没有数字）、数字识别失败、位姿解算不可信。
+ * "数字与装甲板大小矛盾"（小装甲板不可能是英雄/基地）留到确定板型之后处理。
+ */
+void eraseIgnoreClasses(std::vector<ArmorDetection>& detections);
+
+/**
+ * @brief 把检测结果画到图上
+ *
+ * 绿色细框 = 灯条候选，青色粗框 = 装甲板四角点，红点 = 装甲板中心，
+ * 文字 = 距离（m）和号码+置信度。putText 不支持中文，标签都是英文/数字。
+ */
+void drawResult(cv::Mat& canvas, const FrameResult& result);
+
 # endif

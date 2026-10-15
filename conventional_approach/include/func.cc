@@ -487,6 +487,87 @@ DigitResult classify(const cv::Mat& input, const std::string& model_path)
     return result;
 }
 
+void eraseIgnoreClasses(std::vector<ArmorDetection>& detections)
+{
+    std::vector<ArmorDetection> kept;
+    kept.reserve(detections.size());
+
+    for (const auto& d : detections)
+    {
+        // 规则 1：判成 negative，说明两根灯条之间没有数字 → 不是装甲板
+        if (d.digit.valid && d.digit.label == "negative") continue;
+        // 规则 2：数字识别没跑出结果（模型缺失、ROI 无效等）
+        if (!d.digit.valid) continue;
+        // 规则 3：位置解算不可信（深度为负、重投影误差过大等）
+        if (!d.pose.valid) continue;
+
+        kept.push_back(d);
+    }
+    detections.swap(kept);
+}
+
+FrameResult processFrame(const cv::Mat& bgr, const CameraParams& cam, LightColor color,
+                         int diff_thresh, const std::string& model_path)
+{
+    FrameResult out;
+    if (bgr.empty()) return out;
+
+    // 1) 预处理：颜色差分 + 阈值 + 形态学
+    const cv::Mat mask = preprocess(bgr, color, diff_thresh);
+    // 2) 灯条：轮廓 + minAreaRect + 形状筛选（长宽比、竖直度）
+    out.bars = findLights(mask);
+    // 3) 配对：成对约束 + 代价去重，得到装甲板候选
+    const std::vector<ArmorCandidate> armors = matchLights(out.bars);
+
+    // 4) 每块候选：数字识别 + 位置解算
+    out.armors.reserve(armors.size());
+    for (const auto& a : armors)
+    {
+        ArmorDetection d;
+        d.armor = a;
+        d.pose  = positionSolve(a, cam, a.large ? 225.0f : 135.0f, 55.0f);
+        if (!model_path.empty())
+            d.digit = classify(extractNumber(bgr, a, a.large), model_path);
+        out.armors.push_back(d);
+    }
+    return out;
+}
+
+void drawResult(cv::Mat& canvas, const FrameResult& result)
+{
+    if (canvas.empty()) return;
+
+    // 灯条：绿色细框 + 中心红点
+    for (const auto& b : result.bars)
+    {
+        cv::Point2f p[4];
+        b.rect.points(p);
+        for (int k = 0; k < 4; ++k)
+            cv::line(canvas, p[k], p[(k + 1) % 4], cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
+        cv::circle(canvas, b.center, 2, cv::Scalar(0, 0, 255), -1);
+    }
+
+    // 装甲板：青色粗框（四角点按顺序连成四边形）+ 距离/号码文字
+    for (const auto& d : result.armors)
+    {
+        const ArmorCandidate& a = d.armor;
+        for (size_t k = 0; k < a.corners.size(); ++k)
+            cv::line(canvas, a.corners[k], a.corners[(k + 1) % a.corners.size()],
+                     cv::Scalar(255, 255, 0), 2, cv::LINE_AA);
+        cv::circle(canvas, a.center, 3, cv::Scalar(0, 0, 255), -1);
+
+        if (d.pose.valid)
+            cv::putText(canvas, cv::format("%.2fm", d.pose.tvec[2]),
+                        a.center + cv::Point2f(8, -8), cv::FONT_HERSHEY_SIMPLEX, 0.6,
+                        cv::Scalar(255, 255, 0), 2, cv::LINE_AA);
+        if (d.digit.valid)
+            cv::putText(canvas, cv::format("%s %.2f", d.digit.label.c_str(), d.digit.conf),
+                        a.center + cv::Point2f(8, 16), cv::FONT_HERSHEY_SIMPLEX, 0.6,
+                        d.digit.label == "negative" ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0),
+                        2, cv::LINE_AA);
+    }
+}
+
 
 
 

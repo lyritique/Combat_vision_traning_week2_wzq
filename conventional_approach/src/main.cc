@@ -94,62 +94,55 @@ int main()
                       << (a.large ? " [偏大装甲板]" : "") << "\n";
         }
 
-        // d) 位置解算 + 画回原图
-        //    绿色细框=灯条，青色粗框=装甲板四角点，红点=装甲板中心，文字=解出的距离
-        //    处理视频时把 cameraImages() 换成 cameraVideo()
-        const CameraParams cam = cameraImages();
-        cv::Mat view = images[i].clone();
-        for (const auto& b : bars)
-        {
-            cv::Point2f p[4];
-            b.rect.points(p);
-            for (int k = 0; k < 4; ++k)
-                cv::line(view, p[k], p[(k + 1) % 4], cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
-            cv::circle(view, b.center, 2, cv::Scalar(0, 0, 255), -1);
-        }
+        // d) 数字识别 + 位置解算，逐块打印中间量
+        const CameraParams cam = cameraImages();   // 处理视频时换成 cameraVideo()
+        std::vector<ArmorDetection> detections;
+        detections.reserve(armors.size());
         for (size_t j = 0; j < armors.size(); ++j)
         {
             const ArmorCandidate& a = armors[j];
 
-            // 小装甲板 135mm、大装甲板 225mm；large 只是暂定标记，后面要靠号码确认
-            const float width_mm = a.large ? 225.0f : 135.0f;
-            const ArmorPose pose = positionSolve(a, cam, width_mm, 55.0f);
+            // 小装甲板 135mm、大装甲板 225mm；large 只是暂定标记，最终要靠号码确认
+            ArmorDetection d;
+            d.armor = a;
+            d.pose  = positionSolve(a, cam, a.large ? 225.0f : 135.0f, 55.0f);
+            d.digit = classify(extractNumber(images[i], a, a.large), model_path);
 
-            std::cout << "    位姿 #" << j << "（按 " << (int)width_mm << "mm 模板）: ";
-            if (pose.valid)
-                std::cout << "tvec=(" << pose.tvec[0] << ", " << pose.tvec[1] << ", "
-                          << pose.tvec[2] << ") m  重投影误差=" << pose.reproj_err << " px\n";
+            std::cout << "    块 #" << j << " 灯条[" << a.left << "," << a.right << "]"
+                      << " 中心距/灯条长=" << a.ratio
+                      << " 长度比=" << a.length_ratio
+                      << " 倾角差=" << a.angle_diff
+                      << " 垂直偏差=" << a.perp_dev
+                      << " 代价=" << a.cost << "\n";
+            if (d.pose.valid)
+                std::cout << "      位姿: tvec=(" << d.pose.tvec[0] << ", " << d.pose.tvec[1]
+                          << ", " << d.pose.tvec[2] << ") m  重投影误差=" << d.pose.reproj_err << " px\n";
             else
-                std::cout << "解算失败：" << pose.reason << "\n";
-
-            // 数字识别：拉正 -> 截 ROI -> 过网络
-            const cv::Mat roi = extractNumber(images[i], a, a.large);
-            const DigitResult digit = classify(roi, model_path);
-            if (digit.valid)
-                std::cout << "    数字 #" << j << ": " << digit.label
-                          << "  置信度=" << digit.conf
-                          << (digit.label == "negative" ? "（判为无数字，配对应剔除）" : "") << "\n";
+                std::cout << "      位姿: 解算失败（" << d.pose.reason << "）\n";
+            if (d.digit.valid)
+                std::cout << "      数字: " << d.digit.label << "  置信度=" << d.digit.conf << "\n";
             else
-                std::cout << "    数字 #" << j << " 识别失败：" << digit.reason << "\n";
+                std::cout << "      数字: 识别失败（" << d.digit.reason << "）\n";
 
-            for (size_t k = 0; k < a.corners.size(); ++k)          // 四角点按顺序连成四边形
-                cv::line(view, a.corners[k], a.corners[(k + 1) % a.corners.size()],
-                         cv::Scalar(255, 255, 0), 2, cv::LINE_AA);
-            cv::circle(view, a.center, 3, cv::Scalar(0, 0, 255), -1);
-            if (pose.valid)
-                cv::putText(view, cv::format("%.2fm", pose.tvec[2]), a.center + cv::Point2f(8, -8),
-                            cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 0), 2, cv::LINE_AA);
-            if (digit.valid)
-                cv::putText(view, cv::format("%s %.2f", digit.label.c_str(), digit.conf),
-                            a.center + cv::Point2f(8, 16), cv::FONT_HERSHEY_SIMPLEX, 0.6,
-                            digit.label == "negative" ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0),
-                            2, cv::LINE_AA);
+            detections.push_back(d);
         }
+
+        // e) 剔除 negative / 数字识别失败 / 解算不可信的候选
+        const size_t before = detections.size();
+        eraseIgnoreClasses(detections);
+        std::cout << "  剔除后剩 " << detections.size() << " / " << before << " 块\n";
+
+        // f) 画图存盘 + imshow（绿色细框=灯条，青色粗框=装甲板，红点=中心，文字=距离+号码）
+        FrameResult frame_result;
+        frame_result.bars   = bars;
+        frame_result.armors = detections;
+        cv::Mat view = images[i].clone();
+        drawResult(view, frame_result);
         const std::string lpath = out_dir + "/lights_" + std::to_string(i) + ".png";
         cv::imwrite(lpath, view);
         std::cout << "  " << lpath << "\n";
 
-        // d) 显示：左=原图+灯条框，右=二值图，按任意键看下一张
+        // 显示：左=原图+检测结果，右=二值图，按任意键看下一张
         try
         {
             const std::string win1 = "lights " + std::to_string(i) + "  (press any key)";
