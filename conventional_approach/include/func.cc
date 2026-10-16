@@ -1,7 +1,13 @@
+# include <cstddef>
+# include <opencv2/core/mat.hpp>
+# include <opencv2/core/types.hpp>
+# include <opencv2/imgproc.hpp>
 # include <opencv2/opencv.hpp>
 # include <opencv2/core/saturate.hpp>
+# include <string>
+# include <vector>
 # include "func.h"  
-
+# include <fstream>
 
 
 
@@ -77,30 +83,281 @@ cv::Mat preprocess(const cv::Mat& row_img)
     return result_img;
 }
 */
-/*
-cv::Mat preprocess(const cv::Mat& row_img)
+
+std::vector<LightBar> findLights(const cv::Mat& binary_img)
 {
+    //第一步，构建轮廓集
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(binary_img, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+
+    //第二步，contour逐个筛
+    std::vector<LightBar> bars ;
+
+    for (const auto& contour :contours)
+    {
+        //每个contour,用minAreaRect框定可以倾斜的矩形
+        const auto light_possible {cv::minAreaRect(contour)};
+
+        //计算light相关参数
+        cv::Point2f pt[4];
+        light_possible.points(pt);
+        const float edge01 = static_cast<float>(cv::norm(pt[0] - pt[1]));//计算两边
+        const float edge12 = static_cast<float>(cv::norm(pt[1] - pt[2]));
+        const float length = std::max(edge01, edge12);//选出长边
+        const float width  = std::min(edge01, edge12);//选出短边
+
+        //排除不合条件的light
+        //第一，过小
+        if (width < 1.0 || contour.size() < 10) continue;
+        //第二，过长过短
+        //一般情况下，装甲板倾斜程度不会太高
+        if (length > 15.0 * width || length < 1.8 * width) continue;
+        //第三，倾斜程度
+        //长边的两点相减，得到长边方向向量,再解出与竖轴夹角
+        const cv::Point2f dir = (edge01 > edge12) ? (pt[1] - pt[0]) : (pt[2] - pt[1]);
+        float angle = std::atan2(dir.y, dir.x) * 180.0f / static_cast<float>(CV_PI);
+        while (angle <= -90.0f) angle += 180.0f;
+        while (angle >   90.0f) angle -= 180.0f;
+        if (90.0f - std::abs(angle) > 45.0) continue;
+        
+        //最后封装成bar
+        LightBar bar ;
+        
+        bar.frame = light_possible;
+        bar.length = length;
+        bar.width = width;
+        bar.angle  = angle ;    
+        bars.push_back(bar);
+        
+
+    }
 
 
-
-
-
-
-
-
-
+    return bars;
 
 }
 
+//
 
+static float angleDiff(float a, float b)
+{
+    float d = std::fmod(std::abs(a - b), 180.0f);
+    return d > 90.0f ? 180.0f - d : d;
+}
 
+bool isArmorPair(const LightBar& left,const LightBar& right)
+{
+    //同一块装甲板的两根灯条长度近似相同
+    const float length_ratio = std::min(left.length, right.length) / std::max(left.length, right.length);
+    if (length_ratio < 0.75f) return false;
 
+    //角度接近
+    if (angleDiff(left.angle, right.angle) > 10.0f) return false;
+    
+    //中心水平应该相近（但做不到），有两中心的连线应与灯条长轴接近垂直
+    const cv::Point2f delta = right.frame.center - left.frame.center;
+    const float dist = std::sqrt(delta.x * delta.x + delta.y * delta.y);
+    if (dist < 1.0f) return false;
+    const float link_angle = std::atan2(delta.y, delta.x) * 180.0f / static_cast<float>(CV_PI);
+    if (std::abs(90.0f - angleDiff(left.angle, link_angle)) > 15.0f) return false;
 
+    //间距合理
+    const float ratio = dist / (0.5f * (left.length + right.length));
+    if (ratio < 1.4f || ratio > 3.6f) return false;
+    
+    return true;
+}
 
-
-
-
-
-
-
+/*
+static std::vector<cv::Point2f> correctCorners(LightBar left,LightBar right)
+{
+    cv::Point2f points_left [4];
+    left.frame.points(points_left);
+    cv::Point2f points_right [4];
+    left.frame.points(points_right);
+    std::vector<cv::Point2f> corners 
+    {
+        points_left[1],
+        points_right[2],
+        points_right[3],
+        points_left[0]
+    };
+    return corners;
+}
 */
+
+//
+static void barEndpoints(const LightBar& bar, cv::Point2f& top, cv::Point2f& bottom)
+{
+    cv::Point2f pt[4];
+    bar.frame.points(pt);
+
+    // 两条边里长的那条就是灯条方向
+    const float e0 = static_cast<float>(cv::norm(pt[0] - pt[1]));
+    const float e1 = static_cast<float>(cv::norm(pt[1] - pt[2]));
+    cv::Point2f dir = (e0 > e1) ? (pt[1] - pt[0]) : (pt[2] - pt[1]);
+    dir = dir / static_cast<float>(cv::norm(dir));      // 单位化
+
+    // 从中心往两端各推 length/2，就得到对称轴的两个端点
+    const cv::Point2f end1 = bar.frame.center + dir * (bar.length * 0.5f);
+    const cv::Point2f end2 = bar.frame.center - dir * (bar.length * 0.5f);
+
+    // 图像坐标 y 向下，y 大的是"下"端
+    if (end1.y < end2.y) { top = end1; bottom = end2; }
+    else                 { top = end2; bottom = end1; }
+}
+
+static std::vector<cv::Point2f> correctCorners(const LightBar& left, const LightBar& right)
+{
+    cv::Point2f lt, lb, rt, rb;
+    barEndpoints(left,  lt, lb);
+    barEndpoints(right, rt, rb);
+    return { lb, lt, rt, rb };
+}
+
+std::vector<Armor> matchBar (std::vector<LightBar>& bars)
+{
+    //排序，按照中心位置
+    std::sort(bars.begin(), bars.end(), 
+    [](const LightBar& a, const LightBar& b) {return a.frame.center.x < b.frame.center.x;});
+
+    std::vector<Armor> armors;
+
+    //把所有灯条两两配对，找出"可能是一块装甲板"的组合
+    for (size_t i{}; i < bars.size() ; i++)
+    {
+        for (size_t j = i + 1; j < bars.size(); j++)
+        {
+            const LightBar& left  = bars[i];
+            const LightBar& right  = bars[j];
+
+
+            if (isArmorPair(left,right))
+            {
+                Armor armor ;
+                armor.leftBar = &left;
+                armor.rightBar = &right;
+                armor.corners = correctCorners(left,right);
+                armors.emplace_back(armor);
+            }            
+            
+        }
+    }
+    return armors;
+}
+
+cv::Mat extractNumber (cv::Mat& bgr ,Armor& armor,bool large_armor)
+{
+    //
+    if (bgr.empty() || armor.corners.size() != 4) return cv::Mat();
+
+    //
+    const int warp_w  = large_armor ? 54 : 32;
+    const int warp_h  = 28;                         
+    const int top_y   = 7;     
+    const int bottom_y   = 19;                
+    const std::vector<cv::Point2f> dst = {                   
+    {0.0f, static_cast<float>(bottom_y)},                        
+    {0.0f, static_cast<float>(top_y)},                         
+    {static_cast<float>(warp_w), static_cast<float>(top_y)},    
+    {static_cast<float>(warp_w), static_cast<float>(bottom_y)}}; 
+
+    const cv::Mat transMat {cv::getPerspectiveTransform(armor.corners, dst)};
+    cv::Mat warped;
+    cv::warpPerspective(bgr, warped, transMat, cv::Size(warp_w, warp_h));
+
+    cv::Mat gray;
+    cv::cvtColor(warped, gray, cv::COLOR_BGR2GRAY); 
+    const cv::Mat roi = gray(cv::Rect((warp_w - 20)/2, 0,20, 28)).clone();
+
+    cv::threshold(roi, roi, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+
+    cv::Mat input;
+    roi.convertTo(input, CV_32F, 1.0 / 255.0);
+    return input.reshape(1, 1);
+}
+
+
+//
+static std::vector<std::string> loadLabels(const std::string& model_path)
+{
+    static const char* kFallback[] = {"1", "2", "3", "4", "5", "outpost", "guard", "base", "negative"};
+    std::vector<std::string> labels(kFallback, kFallback + 9);
+
+    const size_t slash = model_path.find_last_of("/\\");
+    const std::string dir = (slash == std::string::npos) ? std::string(".") : model_path.substr(0, slash);
+    std::ifstream fin(dir + "/label.txt");
+    if (!fin) return labels;                    // 没有也能跑
+
+    std::vector<std::string> read;
+    std::string line;
+    while (std::getline(fin, line))
+    {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) read.push_back(line);
+    }
+    return read.size() == 9 ? read : labels;
+}
+
+DigitResult classify(cv::Mat& input_blob,const std::string& model_path)
+{
+    DigitResult result ;
+    //启动model,输入
+    static cv::dnn::Net net;
+    static std::string loaded_path;
+    if (input_blob.empty())
+    {
+        result.reason = "输入为空（extractNumber 没拿到 ROI）";
+        return result;
+    }
+    //这里要处理模型异常与输入异常，但留到后面做
+    if (net.empty() || loaded_path != model_path) 
+    { 
+        net = cv::dnn::readNetFromONNX(model_path);  
+        loaded_path = model_path; 
+    }
+    net.setInput(input_blob);
+
+
+    //输出并处理
+    const cv::Mat logits = net.forward(); 
+
+    //CV下来的softmax
+    /*float max_logit = *std::max_element(logits.begin<float>(), logits.end<float>());
+    cv::Mat softmax_logits;
+    cv::exp(logits - max_logit, softmax_logits);
+    float sum = static_cast<float>(cv::sum(softmax_logits)[0]);
+    softmax_logits /= sum;
+
+    double confidence;
+    cv::Point class_id_point;
+    minMaxLoc(softmax_logits.reshape(1, 1), nullptr, &confidence, nullptr, &class_id_point);
+    int label_id = class_id_point.x;*/
+
+    //softmax
+    //单通道单行mat
+    cv::Mat x = logits.reshape(1, 1);
+    //选出max
+    double max_logit {};
+    cv::minMaxLoc(x, nullptr, &max_logit);
+    //
+    cv::Mat expx;
+    cv::exp(x - max_logit, expx);
+    const cv::Mat prob = expx / cv::sum(expx)[0];
+
+    //
+    int best = 0;
+    const float* p = prob.ptr<float>(0);   
+    for (int i = 0; i < prob.cols; ++i)
+    {
+        if (p[i] > p[best]) best = i;
+    }
+
+    //
+    const std::vector<std::string> labels = loadLabels(model_path);
+    result.cls   = best;
+    result.conf  = prob.at<float>(0, best);
+    result.label = labels[best];
+    result.valid = true;
+    return result;
+}
