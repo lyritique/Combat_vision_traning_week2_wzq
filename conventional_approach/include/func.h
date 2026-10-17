@@ -47,7 +47,8 @@ bool isArmorPair(const LightBar& left, const LightBar& right);
 
 
 
-std::vector<cv::Mat> input_image (std::string );
+// names 不为空时按同样顺序返回每张图的完整路径（做误差表要按文件名对真值）
+std::vector<cv::Mat> input_image (std::string path, std::vector<std::string>* names = nullptr);
 cv::Mat  preprocess(const cv::Mat& row_img, LightColor color = LightColor::RED, int diff_thresh = 60);
 std::vector<LightBar> findLights(const cv::Mat& binary_img);
 std::vector<Armor> matchBar (std::vector<LightBar>& bars);

@@ -10,6 +10,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -46,13 +47,22 @@ int main(int argc, char** argv)
     std::filesystem::create_directories(out_dir);
 
     // ---------- 读图 ----------
-    std::vector<cv::Mat> images = input_image(folder);
+    std::vector<std::string> image_paths;
+    std::vector<cv::Mat> images = input_image(folder, &image_paths);
     if (images.empty())
     {
         std::cerr << "没有从 " << folder << " 读到 jpg\n";
         return 1;
     }
     std::cout << "读到 " << images.size() << " 张图（" << folder << "）\n";
+
+    // 检测结果 CSV：给误差表脚本用（每块保留的装甲板一行）
+    // 追加写：多次运行不同图片会累积；想清空就删掉这个文件
+    const std::string det_csv_path = out_dir + "/detections_traditional.csv";
+    const bool csv_is_new = !std::filesystem::exists(det_csv_path) ||
+                            std::filesystem::file_size(det_csv_path) == 0;
+    std::ofstream det_csv(det_csv_path, std::ios::app);
+    if (csv_is_new) det_csv << "image,method,det,label,conf,x_m,y_m,z_m,reproj_px,px,py\n";
 
     // ---------- 逐张处理 ----------
     for (size_t i = 0; i < images.size(); ++i)
@@ -95,6 +105,22 @@ int main(int argc, char** argv)
         const size_t before = detections.size();
         eraseIgnoreClasses(detections, use_digit_filter);
         std::cout << "  剔除后剩 " << detections.size() << "/" << before << " 块\n";
+
+        // 写检测结果（中心像素 = 四个角点的均值）
+        const std::string image_name = (i < image_paths.size())
+            ? std::filesystem::path(image_paths[i]).filename().string()
+            : std::to_string(i);
+        for (size_t j = 0; j < detections.size(); ++j)
+        {
+            const ArmorDetection& d = detections[j];
+            cv::Point2f c(0.0f, 0.0f);
+            for (const auto& p : d.armor.corners) c += p;
+            c *= 0.25f;
+            det_csv << image_name << ",traditional," << j << ','
+                    << d.digit.label << ',' << d.digit.conf << ','
+                    << d.pose.tvec[0] << ',' << d.pose.tvec[1] << ',' << d.pose.tvec[2] << ','
+                    << d.pose.reproj_err << ',' << c.x << ',' << c.y << '\n';
+        }
 
         // 6) 画图存盘
         cv::Mat view = img.clone();

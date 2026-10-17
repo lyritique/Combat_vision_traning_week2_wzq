@@ -22,7 +22,8 @@ static bool isImageFile(const std::string& path)
 
 // 输入既可以是一个文件夹（读里面所有 jpg/png），也可以是一个具体文件。
 // 返回读成功的图片；读失败的打印原因并跳过。
-std::vector<cv::Mat> input_image (std::string path)
+// names 不为空时，把每张图的完整路径按同样顺序填进去（做误差表要按文件名对真值）。
+std::vector<cv::Mat> input_image (std::string path, std::vector<std::string>* names)
 {
     std::vector<std::string> files;
 
@@ -53,6 +54,7 @@ std::vector<cv::Mat> input_image (std::string path)
             continue;
         }
         images.push_back(img);
+        if (names) names->push_back(file);
     }
     return images;
 }

@@ -7,6 +7,7 @@
 
 #include <opencv2/opencv.hpp>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -15,7 +16,7 @@
 #include "PnP_solver.h"    // 复用传统方案的 PnP 模块
 
 // 复用 conventional_approach/include/input_image.cc（CMake 里已加进 target）
-std::vector<cv::Mat> input_image (std::string path);
+std::vector<cv::Mat> input_image (std::string path, std::vector<std::string>* names = nullptr);
 
 int main(int argc, char** argv)
 {
@@ -45,7 +46,8 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::vector<cv::Mat> images = input_image(path);
+    std::vector<std::string> image_paths;
+    std::vector<cv::Mat> images = input_image(path, &image_paths);
     if (images.empty())
     {
         std::cerr << "没有读到图片: " << path << "\n";
@@ -53,6 +55,13 @@ int main(int argc, char** argv)
     }
 
     std::filesystem::create_directories("output/debug");
+
+    // 检测结果 CSV：给误差表脚本用（追加写，多次运行不同图片会累积）
+    const std::string det_csv_path = "output/debug/detections_yolo.csv";
+    const bool csv_is_new = !std::filesystem::exists(det_csv_path) ||
+                            std::filesystem::file_size(det_csv_path) == 0;
+    std::ofstream det_csv(det_csv_path, std::ios::app);
+    if (csv_is_new) det_csv << "image,method,det,label,conf,x_m,y_m,z_m,reproj_px,px,py\n";
 
     // 静态图用 cameraImages()；视频帧要换成 cameraVideo()
     const CameraParams cam = cameraImages();
@@ -70,6 +79,10 @@ int main(int argc, char** argv)
 
         std::cout << "\n第 " << i << " 张（" << img.cols << "x" << img.rows << "）"
                   << " 检测到 " << dets.size() << " 块装甲板\n";
+
+        const std::string image_name = (i < image_paths.size())
+            ? std::filesystem::path(image_paths[i]).filename().string()
+            : std::to_string(i);
 
         for (size_t j = 0; j < dets.size(); ++j)
         {
@@ -90,6 +103,13 @@ int main(int argc, char** argv)
             else
                 std::cout << " 位姿失败(" << poses[j].reason << ")";
             std::cout << "\n";
+
+            if (poses[j].valid)
+                det_csv << image_name << ",yolo," << j << ','
+                        << yoloClassName(d.cls) << ',' << d.score << ','
+                        << poses[j].tvec[0] << ',' << poses[j].tvec[1] << ','
+                        << poses[j].tvec[2] << ',' << poses[j].reproj_err << ','
+                        << center.x << ',' << center.y << '\n';
         }
 
         cv::Mat view = img.clone();

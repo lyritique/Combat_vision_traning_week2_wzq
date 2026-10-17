@@ -3,4 +3,4 @@ Project_materials/
 .clangd 
 .cache
 output/
-scripts/
+models/
