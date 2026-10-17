@@ -310,17 +310,33 @@ DigitResult classify(const cv::Mat& input_blob,const std::string& model_path)
         result.reason = "输入为空（extractNumber 没拿到 ROI）";
         return result;
     }
-    //这里要处理模型异常与输入异常，但留到后面做
-    if (net.empty() || loaded_path != model_path) 
-    { 
-        net = cv::dnn::readNetFromONNX(model_path);  
-        loaded_path = model_path; 
+    // 模型只加载一次；加载失败不要崩，返回失败原因（作业要求处理这种情况）
+    if (net.empty() || loaded_path != model_path)
+    {
+        try
+        {
+            net = cv::dnn::readNetFromONNX(model_path);
+            loaded_path = model_path;
+        }
+        catch (const cv::Exception& e)
+        {
+            result.reason = std::string("模型加载失败：") + e.what();
+            return result;
+        }
     }
-    net.setInput(input_blob);
 
-
-    //输出并处理
-    const cv::Mat logits = net.forward(); 
+    // 前向：输入形状不对也会抛异常，同样兜住
+    cv::Mat logits;
+    try
+    {
+        net.setInput(input_blob);
+        logits = net.forward();
+    }
+    catch (const cv::Exception& e)
+    {
+        result.reason = std::string("网络前向失败：") + e.what();
+        return result;
+    }
 
     //CV下来的softmax
     /*float max_logit = *std::max_element(logits.begin<float>(), logits.end<float>());
@@ -380,20 +396,26 @@ static float quadIoU(const std::vector<cv::Point2f>& a, const std::vector<cv::Po
     return uni > 0.0f ? ia / uni : 0.0f;
 }
 
-void eraseIgnoreClasses(std::vector<ArmorDetection>& detections, bool use_digit_filter = true)
+void eraseIgnoreClasses(std::vector<ArmorDetection>& detections, bool use_digit_filter, float min_digit_conf)
 {
-    //剔除数字识别失败的候选
+    //剔除数字识别失败、置信度过低、位姿解算不可信的候选
     std::vector<ArmorDetection> candidate;
     for (const auto& detection : detections)
     {
-        if (use_digit_filter && (!detection.digit.valid || detection.digit.label == "negative")) continue;
+        if (use_digit_filter)
+        {
+            if (!detection.digit.valid) continue;
+            if (detection.digit.label == "negative") continue;
+            if (detection.digit.conf < min_digit_conf) continue;   // 低置信度 = 不可信
+        }
+        if (!detection.pose.valid) continue;          // 深度为负、重投影误差过大等，直接丢掉
         candidate.push_back(detection);
     }
 
     // 择优顺序：有数字就按数字置信度；没数字（或关掉数字过滤）就按"比例多接近 2.45"
-    auto score = [](const ArmorDetection& detection)
+    auto score = [use_digit_filter](const ArmorDetection& detection)
     {
-        if (detection.digit.valid) return detection.digit.conf;
+        if (use_digit_filter && detection.digit.valid) return detection.digit.conf;
         return 1.0f / (1.0f + std::abs(centerRatio(detection.armor) - 2.4545f));
     };
     std::sort(candidate.begin(), candidate.end(),
@@ -425,3 +447,51 @@ PoseResult positionSolve(const Armor& armor, const CameraParams& cam, float armo
 {
     return solveArmorPose(armor.corners, cam, armor_width_mm, 55.0f);
 }
+
+// ---------------- 结果绘制（图片程序与视频程序共用） ----------------
+void drawResult(cv::Mat& canvas,
+                const std::vector<LightBar>& bars,
+                const std::vector<ArmorDetection>& detections)
+{
+    if (canvas.empty()) return;
+
+    const cv::Scalar bar_color(0, 255, 0);       // 绿：灯条
+    const cv::Scalar armor_color(255, 255, 0);   // 青：装甲板
+    const cv::Scalar center_color(0, 0, 255);    // 红：中心
+
+    // 灯条：旋转矩形 + 中心
+    for (const auto& b : bars)
+    {
+        cv::Point2f p[4];
+        b.frame.points(p);
+        for (int k = 0; k < 4; ++k)
+            cv::line(canvas, p[k], p[(k + 1) % 4], bar_color, 1, cv::LINE_AA);
+        cv::circle(canvas, b.frame.center, 2, center_color, -1);
+    }
+
+    // 装甲板：四角点连成四边形 + 距离/号码
+    for (const auto& d : detections)
+    {
+        const Armor& a = d.armor;
+        if (a.corners.size() == 4)
+        {
+            for (size_t k = 0; k < a.corners.size(); ++k)
+                cv::line(canvas, a.corners[k], a.corners[(k + 1) % a.corners.size()],
+                         armor_color, 2, cv::LINE_AA);
+        }
+
+        const cv::Point2f center = (a.leftBar->frame.center + a.rightBar->frame.center) * 0.5f;
+        cv::circle(canvas, center, 3, center_color, -1);
+
+        if (d.pose.valid)
+            cv::putText(canvas, cv::format("%.2fm", d.pose.tvec[2]), center + cv::Point2f(8, -8),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.6, armor_color, 2, cv::LINE_AA);
+
+        if (d.digit.valid)
+            cv::putText(canvas, cv::format("%s %.2f", d.digit.label.c_str(), d.digit.conf),
+                        center + cv::Point2f(8, 16), cv::FONT_HERSHEY_SIMPLEX, 0.6,
+                        d.digit.label == "negative" ? cv::Scalar(0, 0, 255) : bar_color,
+                        2, cv::LINE_AA);
+    }
+}
+
