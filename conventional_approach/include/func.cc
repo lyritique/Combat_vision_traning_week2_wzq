@@ -299,7 +299,7 @@ static std::vector<std::string> loadLabels(const std::string& model_path)
     return read.size() == 9 ? read : labels;
 }
 
-DigitResult classify(cv::Mat& input_blob,const std::string& model_path)
+DigitResult classify(const cv::Mat& input_blob,const std::string& model_path)
 {
     DigitResult result ;
     //启动model,输入
@@ -360,4 +360,68 @@ DigitResult classify(cv::Mat& input_blob,const std::string& model_path)
     result.label = labels[best];
     result.valid = true;
     return result;
+}
+
+
+static float centerRatio(const Armor& a)
+{
+    const cv::Point2f d = a.rightBar->frame.center - a.leftBar->frame.center;
+    const float dist = cv::norm(d); 
+    return dist / (0.5f * (a.leftBar->length + a.rightBar->length));
+}
+
+// 两个四边形的交并比（四角点按顺序连成的凸四边形正好能用）
+static float quadIoU(const std::vector<cv::Point2f>& a, const std::vector<cv::Point2f>& b)
+{
+    std::vector<cv::Point2f> inter;
+    const float ia = static_cast<float>(cv::intersectConvexConvex(a, b, inter));
+    if (ia <= 0.0f) return 0.0f;
+    const float uni = static_cast<float>(cv::contourArea(a)) + static_cast<float>(cv::contourArea(b)) - ia;
+    return uni > 0.0f ? ia / uni : 0.0f;
+}
+
+void eraseIgnoreClasses(std::vector<ArmorDetection>& detections, bool use_digit_filter = true)
+{
+    //剔除数字识别失败的候选
+    std::vector<ArmorDetection> candidate;
+    for (const auto& detection : detections)
+    {
+        if (use_digit_filter && (!detection.digit.valid || detection.digit.label == "negative")) continue;
+        candidate.push_back(detection);
+    }
+
+    // 择优顺序：有数字就按数字置信度；没数字（或关掉数字过滤）就按"比例多接近 2.45"
+    auto score = [](const ArmorDetection& detection)
+    {
+        if (detection.digit.valid) return detection.digit.conf;
+        return 1.0f / (1.0f + std::abs(centerRatio(detection.armor) - 2.4545f));
+    };
+    std::sort(candidate.begin(), candidate.end(),
+              [&](const ArmorDetection& a, const ArmorDetection& b) { return score(a) > score(b); });
+
+    // 第二关（贪心NMS重叠去重）：与已保留的候选"共用灯条"或"框重叠"就丢弃
+    std::vector<ArmorDetection> out;
+    for (const auto& detection : candidate)
+    {
+        bool conflict = false;
+        for (const auto& o : out)
+        {
+            // 共用灯条：指针直接比，比算几何重叠干脆
+            const bool share_bar = detection.armor.leftBar  == o.armor.leftBar  ||
+                                   detection.armor.leftBar  == o.armor.rightBar ||
+                                   detection.armor.rightBar == o.armor.leftBar  ||
+                                   detection.armor.rightBar == o.armor.rightBar;
+            if (share_bar || quadIoU(detection.armor.corners, o.armor.corners) > 0.5f) { conflict = true; break; }
+        }
+        if (!conflict) out.push_back(detection);
+    }
+    detections.swap(out);
+}
+
+// ---------------- 传统方案的位姿解算封装 ----------------
+// 核心算法在 PnP_solver.cc（传统方案和神经网络方案共用）；
+// 这里只负责把 Armor 的四角点转交给它。
+PoseResult positionSolve(const Armor& armor, const CameraParams& cam, float armor_width_mm)
+{
+    return solveArmorPose(armor.corners, cam, armor_width_mm, 55.0f);
 }

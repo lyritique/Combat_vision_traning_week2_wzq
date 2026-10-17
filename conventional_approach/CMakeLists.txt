@@ -3,7 +3,12 @@ project(
     armor_conventional_detector
     VERSION 0.1.0
 )
-add_executable(armor_conventional_detector src/main.cc)
+add_executable(armor_conventional_detector
+    src/main.cc
+    src/PnP_solver.cc
+    include/func.cc
+    include/input_image.cc
+)
 
 
 find_package( OpenCV REQUIRED )

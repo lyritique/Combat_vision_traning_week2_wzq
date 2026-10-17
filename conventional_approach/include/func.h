@@ -4,6 +4,7 @@
 # include <opencv2/core/mat.hpp>
 # include <opencv2/core/types.hpp>
 # include <opencv2/imgcodecs.hpp>
+# include "PnP_solver.h"     // CameraParams / PoseResult / solveArmorPose
 # include <iostream>
 # include <string>
 # include <vector>
@@ -35,6 +36,12 @@ struct DigitResult
     std::string reason;      // 失败原因（便于调试和统计）
 };
 
+struct ArmorDetection //一块板的检测结果
+{
+    Armor       armor;      // matchBar + correctCorners 的结果
+    DigitResult digit;      // 这块候选的数字识别结果
+};
+
 bool isArmorPair(const LightBar& left, const LightBar& right);
 
 
@@ -46,5 +53,6 @@ std::vector<Armor> matchBar (std::vector<LightBar>& bars);
 cv::Mat extractNumber (cv::Mat& bgr ,Armor& armor,bool large_armor);
 DigitResult classify(const cv::Mat& input, const std::string& model_path);
 void eraseIgnoreClasses();
-void positionSolve();
+// 传统方案的薄封装：从 Armor（两根灯条 + 四角点）解位姿，核心算法在 PnP_solver.cc
+PoseResult positionSolve(const Armor& armor, const CameraParams& cam, float armor_width_mm = 135.0f);
 # endif
