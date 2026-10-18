@@ -23,9 +23,13 @@ import math
 import os
 import sys
 
-# 静态图内参（960x720，零畸变）
+import yaml
+
+# 静态图内参（默认值，实际从 config/default.yaml 读）
 FX = FY = 869.1168824543144
 CX, CY = 480.0, 360.0
+
+DEFAULT_CONFIG = "config/default.yaml"
 
 
 def project(x, y, z):
@@ -92,10 +96,30 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("detections", nargs="+", help="detections_*.csv 路径")
     ap.add_argument("--truth", default="data/truth.csv")
+    ap.add_argument("--config", default=DEFAULT_CONFIG)
     ap.add_argument("--out-prefix", default="output/eval_images")
-    ap.add_argument("--max-px", type=float, default=80.0,
+    ap.add_argument("--max-px", type=float, default=None,
                     help="检测中心与真值投影的最大匹配距离（像素）")
     args = ap.parse_args()
+
+    # 内参与匹配阈值从配置读，命令行仍可覆盖 --max-px
+    global FX, FY, CX, CY
+    max_px = 80.0
+    try:
+        with open(args.config, encoding="utf-8") as f:
+            text = f.read()
+        # OpenCV 写的 YAML 头是 "%YAML:1.0"，PyYAML 不认识，去掉这一行再解析
+        if text.startswith("%YAML"):
+            text = text.split("\n", 1)[1]
+        cfg = yaml.safe_load(text)
+        cam = cfg["camera"]["stills"]
+        FX = float(cam["fx"]); FY = float(cam["fy"])
+        CX = float(cam["cx"]); CY = float(cam["cy"])
+        max_px = float(cfg.get("eval", {}).get("max_px", max_px))
+    except (OSError, KeyError, TypeError) as e:
+        print(f"读取配置失败（{args.config}），使用内置内参: {e}", file=sys.stderr)
+    if args.max_px is not None:
+        max_px = args.max_px
 
     truth = load_truth(args.truth)
     dets = load_detections(args.detections)
@@ -117,7 +141,7 @@ def main():
             by_method.setdefault(d["method"], []).append(d)
 
         for method, mdets in sorted(by_method.items()):
-            matched, false_pos, missed = match_image(mdets, truth[image], args.max_px)
+            matched, false_pos, missed = match_image(mdets, truth[image], max_px)
 
             for t, d, dist in sorted(matched, key=lambda m: m[0]["armor"]):
                 cx, cy, cz = float(d["x_m"]), float(d["y_m"]), float(d["z_m"])

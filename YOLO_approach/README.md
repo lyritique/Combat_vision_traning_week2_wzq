@@ -86,6 +86,24 @@ cmake --build build
 ./build/armor_yolo_video
 ```
 
+## 配置
+
+参数集中在仓库根目录的 `config/default.yaml`（可用 `--config` 指定别的文件）：
+
+| YAML 段 | 含义 |
+|---|---|
+| `camera.stills` / `camera.video` | 两套内参（图片程序用 stills，视频用 video） |
+| `armor` | 板宽 135/225、灯条长 55、重投影误差上限 |
+| `yolo.model` | 检测模型路径（默认 FP32 版本） |
+| `yolo.input_w / input_h` | letterbox 目标尺寸（模型契约，通常不要改） |
+| `yolo.pad_value` | letterbox 填充灰度（默认 124） |
+| `yolo.conf_thresh / nms_iou` | 类别阈值与 NMS IoU |
+| `yolo.num_classes / num_colors` | 输出通道拆分（9 类 4 色） |
+| `yolo.max_dist_m` | 视频距离门限；设 0 表示不启用 |
+| `run.yolo_image` / `run.yolo_video` | 输入、输出、检测 CSV、编码 |
+
+配置里的相对路径相对**仓库根目录**解析。
+
 输出：
 
 | 文件 | 内容 |
@@ -97,6 +115,6 @@ cmake --build build
 
 ## 注意
 
-- 视频用 `cameraVideo()`（1440×1080 + 畸变），静态图用 `cameraImages()`，**不能混**。
-- 视频程序有 **2.5m 距离门限**：本视频真装甲板在 1.4~2m，而背景图案（货架、横幅）会被误检到 4~5.8m；换场景时改 `src/main_video.cc` 里的 `max_pose_dist`。
+- 视频用配置的 `camera.video`（1440×1080 + 畸变），静态图用 `camera.stills`，**不能混**。
+- 视频程序有 **2.5m 距离门限**（`yolo.max_dist_m`）：本视频真装甲板在 1.4~2m，而背景图案（货架、横幅）会被误检到 4~5.8m；换场景时改配置即可。
 - letterbox 必须记录 `scale/pad` 并做逆变换，否则框会整体偏移；`swapRB=true` 不能漏，漏了颜色分支会稳定判成蓝色。

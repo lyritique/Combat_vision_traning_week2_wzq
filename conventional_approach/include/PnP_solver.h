@@ -22,13 +22,6 @@ struct CameraParams
     cv::Mat D() const;             // 畸变系数（1xN；无畸变时空 Mat）
 };
 
-// 静态图：960x720，fx=fy=869.1168824543144, cx=480, cy=360，畸变全 0
-CameraParams cameraImages();
-
-// 视频：1440x1080，fx=2362.2796, fy=2336.1916, cx=679.1751, cy=529.0686
-//      畸变 [-0.098562, 0.111731, -0.003835, -0.002042, 0]
-CameraParams cameraVideo();
-
 // 位置解算结果
 struct PoseResult
 {
@@ -60,9 +53,9 @@ struct PoseResult
  */
 PoseResult solveArmorPose(const std::vector<cv::Point2f>& corners,
                           const CameraParams& cam,
-                          float armor_width_mm = 135.0f,
-                          float bar_length_mm = 55.0f,
-                          double max_reproj_err = 5.0);
+                          float armor_width_mm,
+                          float bar_length_mm,
+                          double max_reproj_err);
 
 /**
  * @brief 把神经网络方案的关键点顺序重排成本模块要求的顺序

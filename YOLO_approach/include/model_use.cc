@@ -47,12 +47,12 @@ bool loadYoloModel(const std::string& model_path, std::string& err)
     }
 }
 
-std::vector<YoloDetection> detectArmorsYolo(const cv::Mat& bgr)
+std::vector<YoloDetection> detectArmorsYolo(const cv::Mat& bgr, const YoloCfg& cfg)
 {
     std::vector<YoloDetection> result;
     if (bgr.empty() || g_net.empty()) return result;
 
-    const Input in = makeBlob(bgr);
+    const Input in = makeBlob(bgr, cfg);
     if (in.blob.empty() || in.info.scale <= 0.0f) return result;
 
     cv::Mat out;
@@ -67,14 +67,18 @@ std::vector<YoloDetection> detectArmorsYolo(const cv::Mat& bgr)
         return result;
     }
 
-    if (out.dims != 3 || out.size[1] != 21)
+    // 通道 = 颜色数 + 类别数 + 4x2 关键点（模型契约，不随配置乱改）
+    const int expect_ch = cfg.num_color + cfg.num_cls + 8;
+    if (out.dims != 3 || out.size[1] != expect_ch)
     {
-        std::cerr << "YOLO 输出形状不对，期望 [1,21,6300]\n";
+        std::cerr << "YOLO 输出形状不对，期望通道数 " << expect_ch << "，实际 "
+                  << (out.dims == 3 ? out.size[1] : -1) << "\n";
         return result;
     }
 
-    const int num_ch = out.size[1];     // 21 = 4 颜色 + 9 类别 + 4x2 关键点
+    const int num_ch = out.size[1];
     const int num_c  = out.size[2];     // 6300 = 80x60 + 40x30 + 20x15
+    const int kp_off = cfg.num_color + cfg.num_cls; // 关键点起始通道（本模型 = 13）
 
     // 输出是"通道优先"布局：element(通道 f, 候选 c) = data[c + f * num_c]
     // 展平成一维视图，避免 3 维下标写错
@@ -82,7 +86,7 @@ std::vector<YoloDetection> detectArmorsYolo(const cv::Mat& bgr)
     const float* data = flat.ptr<float>(0);
     auto at = [&](int f, int c) { return data[c + f * num_c]; };
 
-    const float kConf = 0.5f;
+    const float kConf = cfg.conf;
     std::vector<YoloDetection> candidates;
 
     for (int c = 0; c < num_c; ++c)
@@ -90,7 +94,7 @@ std::vector<YoloDetection> detectArmorsYolo(const cv::Mat& bgr)
         // 9 个类别得分取最大（输出已经 sigmoid 过，没有 objectness 通道）
         float best_score = 0.0f;
         int   best_cls   = -1;
-        for (int k = 0; k < 9; ++k)
+        for (int k = 0; k < cfg.num_cls; ++k)
         {
             const float s = at(4 + k, c);
             if (s > best_score) { best_score = s; best_cls = k; }
@@ -100,7 +104,7 @@ std::vector<YoloDetection> detectArmorsYolo(const cv::Mat& bgr)
         // 颜色：前 4 行取最大
         int   color      = 0;
         float best_color = at(0, c);
-        for (int k = 1; k < 4; ++k)
+        for (int k = 1; k < cfg.num_color; ++k)
         {
             const float s = at(k, c);
             if (s > best_color) { best_color = s; color = k; }
@@ -110,8 +114,8 @@ std::vector<YoloDetection> detectArmorsYolo(const cv::Mat& bgr)
         std::vector<cv::Point2f> kp(4);
         for (int i = 0; i < 4; ++i)
         {
-            const float x = at(13 + 2 * i,     c);
-            const float y = at(13 + 2 * i + 1, c);
+            const float x = at(kp_off + 2 * i,     c);
+            const float y = at(kp_off + 2 * i + 1, c);
             kp[i].x = (x - in.info.pad_x) / in.info.scale;
             kp[i].y = (y - in.info.pad_y) / in.info.scale;
         }
@@ -140,7 +144,7 @@ std::vector<YoloDetection> detectArmorsYolo(const cv::Mat& bgr)
     }
 
     std::vector<int> keep;
-    cv::dnn::NMSBoxes(boxes, scores, kConf, 0.45f, keep);
+    cv::dnn::NMSBoxes(boxes, scores, kConf, cfg.nms, keep);
 
     result.reserve(keep.size());
     for (int i : keep) result.push_back(candidates[i]);

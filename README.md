@@ -51,7 +51,23 @@ cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build build
 ```
 
-两个工程都会把模型目录的**绝对路径**编进程序，所以在 `build/` 里运行也能找到模型。
+两个工程都会把仓库根目录（`PROJECT_ROOT`）编进程序，配置文件默认从
+`<仓库根>/config/default.yaml` 读取，所以在哪个目录运行都能找到配置、模型和素材。
+
+## 配置
+
+所有会随素材/机器/场景变化的参数都集中在 `config/default.yaml`：
+相机内参、装甲板尺寸、灯条与配对阈值、数字网络参数、YOLO 输入与阈值、
+四个程序的文件路径、评测的匹配距离。
+
+- 默认读取 `<仓库根>/config/default.yaml`，与当前工作目录无关；
+- 也可以用 `--config path/to/other.yaml` 指定另一份配置；
+- 图片程序的 `<输入> <阈值> <blue|red>` 三个位置参数仍可覆盖配置里的
+  `input / thresh / color`；
+- 配置里的相对路径一律相对**仓库根目录**解析。
+
+**模型/算法契约不进配置**：21 通道布局、9 类 4 色的顺序、角点顺序、4 点 PnP、
+"输出已做 sigmoid" 这些改了就会让解算崩掉，因此保留在代码里。
 
 ## 模型准备
 
@@ -96,6 +112,7 @@ cd conventional_approach
 M=../Project_materials/含真值图像
 ./build/armor_conventional_detector "$M/图1/Image_1791695492312_183.jpg" 25 blue
 ./build/armor_conventional_detector "$M/图3/Image_1791695502223_335.jpg" 50 blue
+# 换一份配置：./build/armor_conventional_detector --config ../config/other.yaml
 
 # 传统方案：视频（531 帧 -> 标注视频 + CSV）
 ./build/armor_video

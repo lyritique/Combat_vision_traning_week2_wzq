@@ -16,6 +16,7 @@ set(YOLO_COMMON_SOURCES
     include/model_use.cc
     include/draw.cc
     ${SHARED_DIR}/src/PnP_solver.cc
+    ${SHARED_DIR}/src/config.cpp
 )
 
 add_executable( armor_yolo_detector
@@ -37,7 +38,7 @@ foreach(tgt armor_yolo_detector armor_yolo_video)
     )
     target_link_libraries( ${tgt} PRIVATE ${OpenCV_LIBS} )
 
-    # 把模型目录的绝对路径编进程序，避免"在 build/ 里运行就找不到模型"
+    # 配置文件的默认路径 = 仓库根目录/config/default.yaml，与当前工作目录无关
     target_compile_definitions( ${tgt} PRIVATE
-        YOLO_MODEL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/models" )
+        PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.." )
 endforeach()

@@ -20,23 +20,11 @@ std::vector<cv::Mat> input_image (std::string path, std::vector<std::string>* na
 
 int main(int argc, char** argv)
 {
-    const std::string default_path =
-        "/home/lyritique/project/Task2/Project_materials/含真值图像/图1";
-    const std::string path = (argc > 1) ? argv[1] : default_path;
-
-    // 模型路径：优先 FP32 版本（OpenCV 4.5.4 的 dnn 读不了 FP16 常量），其次原版
-    std::string model_path = "models/Infantry_fp32.onnx";
-#ifdef YOLO_MODEL_DIR
-    {
-        const std::string dir = YOLO_MODEL_DIR;
-        if (std::filesystem::exists(dir + "/Infantry_fp32.onnx"))
-            model_path = dir + "/Infantry_fp32.onnx";
-        else if (std::filesystem::exists(dir + "/Infantry.onnx"))
-            model_path = dir + "/Infantry.onnx";
-    }
-#else
-    if (!std::filesystem::exists(model_path)) model_path = "models/Infantry.onnx";
-#endif
+    // ---------- 参数（config/default.yaml，可用命令行覆盖） ----------
+    const Config cfg = Config::load(findConfigPath(argc, argv));
+    const std::vector<std::string> pos = positionalArgs(argc, argv);
+    const std::string path = pos.size() > 0 ? pos[0] : cfg.yolo_image.input;
+    const std::string model_path = cfg.yolo.model;
 
     std::string err;
     if (!loadYoloModel(model_path, err))
@@ -57,29 +45,34 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::filesystem::create_directories("output/debug");
+    const std::string det_csv_path = cfg.yolo_image.det_csv;
+    {
+        const auto parent = std::filesystem::path(det_csv_path).parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent);
+    }
 
     // 检测结果 CSV：给误差表脚本用（追加写，多次运行不同图片会累积）
-    const std::string det_csv_path = "output/debug/detections_yolo.csv";
     const bool csv_is_new = !std::filesystem::exists(det_csv_path) ||
                             std::filesystem::file_size(det_csv_path) == 0;
     std::ofstream det_csv(det_csv_path, std::ios::app);
     if (csv_is_new) det_csv << "image,method,det,label,conf,x_m,y_m,z_m,reproj_px,px,py\n";
 
-    // 静态图用 cameraImages()；视频帧要换成 cameraVideo()
-    const CameraParams cam = cameraImages();
+    // 静态图用 stills 那套内参；视频帧用 video 那套
+    const CameraParams cam = cfg.camera(false);
     
 
     for (size_t i = 0; i < images.size(); ++i)
     {
         cv::Mat& img = images[i];
-        const std::vector<YoloDetection> dets = detectArmorsYolo(img);
+        const std::vector<YoloDetection> dets = detectArmorsYolo(img, cfg.yolo);
 
         // 每块检测都解一次位姿（关键点顺序 LT,LB,RB,RT -> 重排成 LB,LT,RT,RB）
         std::vector<PoseResult> poses;
         poses.reserve(dets.size());
         for (const auto& d : dets)
-            poses.push_back(solveArmorPose(cornersFromNNKeypoints(d.keypoints), cam, 135.0f, 55.0f));
+            poses.push_back(solveArmorPose(cornersFromNNKeypoints(d.keypoints), cam,
+                                           cfg.armorWidthMm(), cfg.armor.bar_len,
+                                           cfg.armor.max_reproj));
 
         std::cout << "\n第 " << i << " 张（" << img.cols << "x" << img.rows << "）"
                   << " 检测到 " << dets.size() << " 块装甲板\n";
