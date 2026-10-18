@@ -16,7 +16,7 @@ add_executable(armor_video
     src/main_video.cc
     src/PnP_solver.cc
     include/func.cc
-    src/config.cpp
+    src/config.cc
 )
 
 

@@ -16,7 +16,7 @@ set(YOLO_COMMON_SOURCES
     include/model_use.cc
     include/draw.cc
     ${SHARED_DIR}/src/PnP_solver.cc
-    ${SHARED_DIR}/src/config.cpp
+    ${SHARED_DIR}/src/config.cc
 )
 
 add_executable( armor_yolo_detector
