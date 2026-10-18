@@ -5,7 +5,7 @@
 //   ./armor_video <视频> <输出视频> <输出CSV>
 //
 // 和图片程序的区别只有三点：
-//   1. 内参用 cameraVideo()（1440x1080 + 5 个畸变系数），不是 cameraImages()
+//   1. 内参用配置里的 camera.video（1440x1080 + 5 个畸变系数），不是 camera.stills
 //   2. 灯条是红色的，阈值 60
 //   3. 打开数字过滤（negative 是有效的剔除信号）
 
@@ -27,24 +27,24 @@
 
 int main(int argc, char** argv)
 {
-    const std::string video_path = (argc > 1) ? argv[1]
-        : "/home/lyritique/project/Task2/Project_materials/相机内参与视频/Video_1791696012009_214.avi";
-    const std::string out_video  = (argc > 2) ? argv[2] : "output/traditional_video.avi";
-    const std::string out_csv    = (argc > 3) ? argv[3] : "output/traditional_video.csv";
+    // ---------- 参数（config/default.yaml，可用命令行覆盖） ----------
+    const Config cfg = Config::load(findConfigPath(argc, argv));
+    const std::vector<std::string> pos = positionalArgs(argc, argv);
 
-    const CameraParams cam   = cameraVideo();      // 视频专用内参
-    const LightColor   color = LightColor::RED;    // 视频里的灯条是红色
-    const int          thresh = 60;
-    const bool use_digit_filter = true;            // 视频里 negative 要剔除
+    const std::string video_path = pos.size() > 0 ? pos[0] : cfg.conv_video.input;
+    const std::string out_video  = pos.size() > 1 ? pos[1] : cfg.conv_video.out_video;
+    const std::string out_csv    = pos.size() > 2 ? pos[2] : cfg.conv_video.out_csv;
 
-    // 模型路径：优先用 CMake 传进来的绝对路径（不依赖当前工作目录）
-    std::string model_path = "models/mlp.onnx";
-#ifdef ARMOR_MODEL_DIR
-    {
-        const std::string abs_path = std::string(ARMOR_MODEL_DIR) + "/mlp.onnx";
-        if (std::filesystem::exists(abs_path)) model_path = abs_path;
-    }
-#endif
+    const CameraParams cam   = cfg.camera(true);              // 视频专用内参
+    const LightColor   color = parseColor(cfg.conv_video.color);
+    const int          thresh = cfg.conv_video.thresh;
+    const bool use_digit_filter = cfg.digit.filter_video;
+
+    // 编码：MJPG / MP4V
+    const std::string codec_name = cfg.conv_video.codec;
+    const int codec = (codec_name == "MP4V")
+        ? cv::VideoWriter::fourcc('M', 'P', '4', 'V')
+        : cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
 
     // 输出目录（路径可能只是文件名，parent 为空时跳过）
     for (const auto& p : {out_video, out_csv})
@@ -66,9 +66,8 @@ int main(int argc, char** argv)
     const int    height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
     std::cout << "视频: " << width << "x" << height << "  " << total << " 帧  " << fps << " fps\n";
 
-    // MJPG 写 avi，兼容性最稳；需要 mp4 可以最后用 ffmpeg 转
-    cv::VideoWriter writer(out_video, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'),
-                           fps, cv::Size(width, height));
+    // 默认 MJPG 写 avi，兼容性最稳；需要 mp4 可以最后用 ffmpeg 转
+    cv::VideoWriter writer(out_video, codec, fps, cv::Size(width, height));
     if (!writer.isOpened())
     {
         std::cerr << "打不开输出视频: " << out_video << "\n";
@@ -86,16 +85,18 @@ int main(int argc, char** argv)
 
     int frames = 0, frames_with = 0, cand_total = 0, kept_total = 0;
     std::map<std::string, int> number_count;
+
+    //开始计时
     const auto t0 = std::chrono::steady_clock::now();
 
     cv::Mat frame;
     while (cap.read(frame))
     {
         if (frame.empty()) break;
-
-        cv::Mat mask = preprocess(frame, color, thresh);
-        std::vector<LightBar> bars = findLights(mask);
-        std::vector<Armor> armors = matchBar(bars);
+        //闪电三连鞭
+        cv::Mat mask = preprocess(frame, color, thresh, cfg.light);
+        std::vector<LightBar> bars = findLights(mask, cfg.light);
+        std::vector<Armor> armors = matchBar(bars, cfg.pair);
 
         std::vector<ArmorDetection> detections;
         detections.reserve(armors.size());
@@ -103,19 +104,20 @@ int main(int argc, char** argv)
         {
             ArmorDetection d;
             d.armor = a;
-            d.digit = classify(extractNumber(frame, d.armor, false), model_path);
-            d.pose  = positionSolve(d.armor, cam);
+            d.digit = classify(extractNumber(frame, d.armor, cfg.digit, false), cfg.digit);
+            d.pose  = positionSolve(d.armor, cam, cfg.armor);
             detections.push_back(d);
         }
 
         const int cand = static_cast<int>(detections.size());
         cand_total += cand;
 
-        eraseIgnoreClasses(detections, use_digit_filter);
+        eraseIgnoreClasses(detections, cfg.digit, cfg.pair, use_digit_filter);
 
         const int kept = static_cast<int>(detections.size());
         kept_total += kept;
         if (kept > 0) ++frames_with;
+        //AI写的统计很详尽啊
 
         for (const auto& d : detections)
         {
@@ -138,6 +140,7 @@ int main(int argc, char** argv)
     writer.release();
     csv.close();
 
+    //结束计时
     const double sec = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - t0).count();
     const double keep_rate = cand_total > 0 ? 100.0 * kept_total / cand_total : 0.0;

@@ -8,6 +8,7 @@ add_executable(armor_conventional_detector
     src/PnP_solver.cc
     include/func.cc
     include/input_image.cc
+    src/config.cpp
 )
 
 # 视频批处理：531 帧 -> 标注视频 + CSV
@@ -15,6 +16,7 @@ add_executable(armor_video
     src/main_video.cc
     src/PnP_solver.cc
     include/func.cc
+    src/config.cpp
 )
 
 
@@ -23,8 +25,9 @@ include_directories( include/)
 target_link_libraries( armor_conventional_detector PUBLIC ${OpenCV_LIBS} )
 target_link_libraries( armor_video                PUBLIC ${OpenCV_LIBS} )
 
-# 把模型目录的绝对路径编进程序，避免"在 build/ 里运行就找不到 models/mlp.onnx"
-target_compile_definitions( armor_conventional_detector PRIVATE
-    ARMOR_MODEL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/models" )
-target_compile_definitions( armor_video PRIVATE
-    ARMOR_MODEL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/models" )
+foreach(tgt armor_conventional_detector armor_video)
+    # 配置文件的默认路径 = 仓库根目录/config/default.yaml，
+    # 与当前工作目录无关
+    target_compile_definitions(${tgt} PRIVATE
+        PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/..")
+endforeach()

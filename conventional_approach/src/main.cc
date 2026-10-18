@@ -10,6 +10,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -20,33 +21,24 @@
 
 int main(int argc, char** argv)
 {
-    // ---------- 参数 ----------
-    const std::string default_folder =
-        "/home/lyritique/project/Task2/Project_materials/含真值图像/图1";
-    const std::string folder = (argc > 1) ? argv[1] : default_folder;
-    const int thresh = (argc > 2) ? std::stoi(argv[2]) : 25;
-    const std::string color_name = (argc > 3) ? argv[3] : "blue";
-    const LightColor color = (color_name == "red") ? LightColor::RED : LightColor::BLUE;
+    // ---------- 参数（config/default.yaml，可用命令行覆盖） ----------
+    const Config cfg = Config::load(findConfigPath(argc, argv));
+    const std::vector<std::string> pos = positionalArgs(argc, argv);
 
-    const std::string out_dir = "output/debug";
+    const std::string folder = pos.size() > 0 ? pos[0] : cfg.conv_image.input;
+    const int thresh = pos.size() > 1 ? std::stoi(pos[1]) : cfg.conv_image.thresh;
+    const std::string color_name = pos.size() > 2 ? pos[2] : cfg.conv_image.color;
+    const LightColor color = parseColor(color_name);
 
-    // 模型路径：优先用 CMake 传进来的绝对路径（不依赖当前工作目录）；
-    // 找不到时退回相对路径（要求在 conventional_approach/ 下运行）
-    std::string model_path = "models/mlp.onnx";
-#ifdef ARMOR_MODEL_DIR
-    {
-        const std::string abs_path = std::string(ARMOR_MODEL_DIR) + "/mlp.onnx";
-        if (std::filesystem::exists(abs_path)) model_path = abs_path;
-    }
-#endif
-    const CameraParams cam = cameraImages();              // 视频素材改成 cameraVideo()
-    // 仿真图（图1/2/3）先用几何去重；真实视频建议改成 true，negative 会被剔除
-    const bool use_digit_filter = false;
+    const std::string out_dir = cfg.conv_image.out_dir;
+    const CameraParams cam = cfg.camera(false);           // 静态图那套内参
+    const bool use_digit_filter = cfg.digit.filter_image;
 
     std::filesystem::create_directories(out_dir);
 
     // ---------- 读图 ----------
-    std::vector<cv::Mat> images = input_image(folder);
+    std::vector<std::string> image_paths;
+    std::vector<cv::Mat> images = input_image(folder, &image_paths);
     if (images.empty())
     {
         std::cerr << "没有从 " << folder << " 读到 jpg\n";
@@ -54,14 +46,22 @@ int main(int argc, char** argv)
     }
     std::cout << "读到 " << images.size() << " 张图（" << folder << "）\n";
 
+    // 检测结果 CSV：给误差表脚本用（每块保留的装甲板一行）
+    // 追加写：多次运行不同图片会累积；想清空就删掉这个文件
+    const std::string det_csv_path = cfg.conv_image.det_csv;
+    const bool csv_is_new = !std::filesystem::exists(det_csv_path) ||
+                            std::filesystem::file_size(det_csv_path) == 0;
+    std::ofstream det_csv(det_csv_path, std::ios::app);
+    if (csv_is_new) det_csv << "image,method,det,label,conf,x_m,y_m,z_m,reproj_px,px,py\n";
+
     // ---------- 逐张处理 ----------
     for (size_t i = 0; i < images.size(); ++i)
     {
         cv::Mat& img = images[i];                        // extractNumber 要非 const 引用
 
-        cv::Mat mask = preprocess(img, color, thresh);   // 1) 二值图
-        std::vector<LightBar> bars = findLights(mask);   // 2) 灯条
-        std::vector<Armor> armors = matchBar(bars);      // 3) 配对（内部已填 corners）
+        cv::Mat mask = preprocess(img, color, thresh, cfg.light);   // 1) 二值图
+        std::vector<LightBar> bars = findLights(mask, cfg.light);   // 2) 灯条
+        std::vector<Armor> armors = matchBar(bars, cfg.pair);       // 3) 配对（内部已填 corners）
 
         // 4) 每块候选：数字识别 + 位姿解算
         std::vector<ArmorDetection> detections;
@@ -70,8 +70,8 @@ int main(int argc, char** argv)
         {
             ArmorDetection d;
             d.armor = a;
-            d.digit = classify(extractNumber(img, d.armor, false), model_path);
-            d.pose  = positionSolve(d.armor, cam);
+            d.digit = classify(extractNumber(img, d.armor, cfg.digit, false), cfg.digit);
+            d.pose  = positionSolve(d.armor, cam, cfg.armor);
             detections.push_back(d);
         }
 
@@ -91,10 +91,27 @@ int main(int argc, char** argv)
             std::cout << "\n";
         }
 
-        // 5) 剔除 negative / 识别失败 / 解算不可信 / 重复
+        // 5) 剔除 negative 、 识别失败 、 解算不可信 、 重复
         const size_t before = detections.size();
-        eraseIgnoreClasses(detections, use_digit_filter);
+        eraseIgnoreClasses(detections, cfg.digit, cfg.pair, use_digit_filter);
         std::cout << "  剔除后剩 " << detections.size() << "/" << before << " 块\n";
+
+        // 写检测结果（中心像素 = 四个角点的均值）
+        const std::string image_name = (i < image_paths.size())
+            ? std::filesystem::path(image_paths[i]).filename().string()
+            : std::to_string(i);
+        for (size_t j = 0; j < detections.size(); ++j)
+        {
+            const ArmorDetection& d = detections[j];
+            cv::Point2f c(0.0f, 0.0f);
+            for (const auto& p : d.armor.corners) c += p;
+            c *= 0.25f;
+            //写csv
+            det_csv << image_name << ",traditional," << j << ','
+                    << d.digit.label << ',' << d.digit.conf << ','
+                    << d.pose.tvec[0] << ',' << d.pose.tvec[1] << ',' << d.pose.tvec[2] << ','
+                    << d.pose.reproj_err << ',' << c.x << ',' << c.y << '\n';
+        }
 
         // 6) 画图存盘
         cv::Mat view = img.clone();
@@ -117,6 +134,6 @@ int main(int argc, char** argv)
             std::cerr << "  imshow 失败，直接看图：" << path << "\n";
         }
     }
-
+    det_csv.close();
     return 0;
 }

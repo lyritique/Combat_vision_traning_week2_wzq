@@ -18,24 +18,14 @@
 
 int main(int argc, char** argv)
 {
-    const std::string video_path = (argc > 1) ? argv[1]
-        : "/home/lyritique/project/Task2/Project_materials/相机内参与视频/Video_1791696012009_214.avi";
-    const std::string out_video  = (argc > 2) ? argv[2] : "output/yolo_video.avi";
-    const std::string out_csv    = (argc > 3) ? argv[3] : "output/yolo_video.csv";
+    // ---------- 参数（config/default.yaml，可用命令行覆盖） ----------
+    const Config cfg = Config::load(findConfigPath(argc, argv));
+    const std::vector<std::string> pos = positionalArgs(argc, argv);
 
-    // 模型路径：优先 FP32 版本，其次原版
-    std::string model_path = "models/Infantry_fp32.onnx";
-#ifdef YOLO_MODEL_DIR
-    {
-        const std::string dir = YOLO_MODEL_DIR;
-        if (std::filesystem::exists(dir + "/Infantry_fp32.onnx"))
-            model_path = dir + "/Infantry_fp32.onnx";
-        else if (std::filesystem::exists(dir + "/Infantry.onnx"))
-            model_path = dir + "/Infantry.onnx";
-    }
-#else
-    if (!std::filesystem::exists(model_path)) model_path = "models/Infantry.onnx";
-#endif
+    const std::string video_path = pos.size() > 0 ? pos[0] : cfg.yolo_video.input;
+    const std::string out_video  = pos.size() > 1 ? pos[1] : cfg.yolo_video.out_video;
+    const std::string out_csv    = pos.size() > 2 ? pos[2] : cfg.yolo_video.out_csv;
+    const std::string model_path = cfg.yolo.model;
 
     std::string err;
     if (!loadYoloModel(model_path, err))
@@ -45,11 +35,15 @@ int main(int argc, char** argv)
     }
 
     // 视频专用内参（1440x1080 + 5 个畸变系数）
-    const CameraParams cam = cameraVideo();
+    const CameraParams cam = cfg.camera(true);
 
     // 距离门限：本视频里真装甲板在 1.4~1.6m，而背景误检集中在 4m 以外
-    // （货架、横幅上的图案）。用 2.5m 把远处误检挡掉；换场景时改这里。
-    const float max_pose_dist = 2.5f;
+    // （货架、横幅上的图案）。配置项 yolo.max_dist_m；换成 0 表示不启用。
+    const float max_pose_dist = cfg.yolo.max_dist;
+    const std::string codec_name = cfg.yolo_video.codec;
+    const int codec = (codec_name == "MP4V")
+        ? cv::VideoWriter::fourcc('M', 'P', '4', 'V')
+        : cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
 
     for (const auto& p : {out_video, out_csv})
     {
@@ -70,8 +64,7 @@ int main(int argc, char** argv)
     const int    height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
     std::cout << "视频: " << width << "x" << height << "  " << total << " 帧  " << fps << " fps\n";
 
-    cv::VideoWriter writer(out_video, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'),
-                           fps, cv::Size(width, height));
+    cv::VideoWriter writer(out_video, codec, fps, cv::Size(width, height));
     if (!writer.isOpened())
     {
         std::cerr << "打不开输出视频: " << out_video << "\n";
@@ -96,13 +89,15 @@ int main(int argc, char** argv)
     {
         if (frame.empty()) break;
 
-        const std::vector<YoloDetection> dets = detectArmorsYolo(frame);
+        const std::vector<YoloDetection> dets = detectArmorsYolo(frame, cfg.yolo);
 
         // 关键点重排后解位姿（网络顺序 LT,LB,RB,RT -> PnP 要的 LB,LT,RT,RB）
         std::vector<PoseResult> poses;
         poses.reserve(dets.size());
         for (const auto& d : dets)
-            poses.push_back(solveArmorPose(cornersFromNNKeypoints(d.keypoints), cam, 135.0f, 55.0f));
+            poses.push_back(solveArmorPose(cornersFromNNKeypoints(d.keypoints), cam,
+                                           cfg.armorWidthMm(), cfg.armor.bar_len,
+                                           cfg.armor.max_reproj));
 
         det_total += static_cast<int>(dets.size());
 
@@ -113,7 +108,7 @@ int main(int argc, char** argv)
         {
             const PoseResult& p = poses[j];
             if (!p.valid) continue;
-            if (p.tvec[2] > max_pose_dist) { ++far_dropped; continue; }
+            if (max_pose_dist > 0.0f && p.tvec[2] > max_pose_dist) { ++far_dropped; continue; }
             kept_dets.push_back(dets[j]);
             kept_poses.push_back(p);
         }

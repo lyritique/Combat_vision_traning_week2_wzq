@@ -23,29 +23,6 @@ cv::Mat CameraParams::D() const
     return d.reshape(1, 1);                 // solvePnP 要 1xN 行向量
 }
 
-CameraParams cameraImages()
-{
-    CameraParams c;
-    c.fx = 869.1168824543144;
-    c.fy = 869.1168824543144;
-    c.cx = 480.0;
-    c.cy = 360.0;
-    c.dist = {0.0, 0.0, 0.0, 0.0, 0.0};     // plumb_bob，全 0 = 按无畸变处理
-    return c;
-}
-
-CameraParams cameraVideo()
-{
-    CameraParams c;
-    c.fx = 2362.2795952460974;
-    c.fy = 2336.1916035376717;
-    c.cx = 679.17513921636282;
-    c.cy = 529.06858905837635;
-    c.dist = {-0.098561592108101559, 0.11173066531932681,
-              -0.0038352945867108721, -0.0020421443354436304, 0.0};
-    return c;
-}
-
 // ---------------- 物体点 ----------------
 
 // 装甲板模型的 4 个物体点（单位 mm），顺序与 solveArmorPose 要求的角点顺序一一对应

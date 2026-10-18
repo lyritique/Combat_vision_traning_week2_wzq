@@ -1,0 +1,93 @@
+%YAML 1.0
+
+# ================= 相机内参（按素材选一套，绝不混用） =================
+camera:
+  stills:                      # 960x720 静态图
+    width: 960
+    height: 720
+    fx: 869.1168824543144
+    fy: 869.1168824543144
+    cx: 480.0
+    cy: 360.0
+    dist: [0.0, 0.0, 0.0, 0.0, 0.0]
+  video:                       # 1440x1080 视频
+    width: 1440
+    height: 1080
+    fx: 2362.2795952460974
+    fy: 2336.1916035376717
+    cx: 679.17513921636282
+    cy: 529.06858905837635
+    dist: [-0.098561592108101559, 0.11173066531932681,
+           -0.0038352945867108721, -0.0020421443354436304, 0.0]
+
+# ================= 装甲板物理模型（PnP 的"尺子"） =================
+armor:
+  small_width_mm: 135.0        # 两灯条中心距（待确认：还是 120？）
+  large_width_mm: 225.0
+  bar_length_mm: 55.0
+  use_large: 0
+  max_reproj_px: 5.0
+
+# ================= 灯条提取 / 配对（传统方案） =================
+light:
+  morph_kernel: 3
+  min_contour_pts: 10
+  min_bar_width_px: 1.0
+  min_aspect: 1.8
+  max_aspect: 15.0
+  max_tilt_deg: 45.0
+pair:
+  min_length_ratio: 0.75
+  max_angle_diff_deg: 10.0
+  max_perp_diff_deg: 15.0
+  min_gap_ratio: 1.4
+  max_gap_ratio: 3.6
+  nominal_ratio: 2.4545        # 135/55，去重打分用
+
+# ================= 数字识别 =================
+digit:
+  model: models/mlp.onnx
+  labels: models/label.txt
+  conf_min: 0.5
+  filter_in_image: 0           # 仿真图数字网络不稳，关掉
+  filter_in_video: 1
+  warp_small_w: 32
+  warp_large_w: 54
+  warp_h: 28
+  roi_w: 20
+  top_y: 7
+  bottom_y: 19
+
+# ================= 神经网络方案 =================
+yolo:
+  model: models/Infantry_fp32.onnx
+  input_w: 640
+  input_h: 480
+  pad_value: 124
+  conf_thresh: 0.5
+  nms_iou: 0.45
+  num_classes: 9
+  num_colors: 4
+  max_dist_m: 2.5
+
+# ================= 四个程序的运行参数 =================
+run:
+  conventional_image:
+    input: Project_materials/含真值图像/图1
+    out_dir: output/debug
+    det_csv: output/debug/detections_traditional.csv
+    thresh: 25
+    color: blue
+  conventional_video:
+    input: Project_materials/相机内参与视频/Video_1791696012009_214.avi
+    out_video: output/traditional_video.avi
+    out_csv: output/traditional_video.csv
+    thresh: 60
+    color: red
+  yolo_image:
+    input: Project_materials/含真值图像/图1
+    det_csv: output/debug/detections_yolo.csv
+  yolo_video:
+    input: Project_materials/相机内参与视频/Video_1791696012009_214.avi
+    out_video: output/yolo_video.avi
+    out_csv: output/yolo_video.csv

@@ -28,7 +28,7 @@
  *                    视频（红灯条）50~60；图3（蓝灯条）40~60；图1（蓝灯条偏暗）20~30
  * @return CV_8UC1 二值图，255 = 可能是灯条，0 = 背景
  */
-cv::Mat  preprocess(const cv::Mat& row_img, LightColor color, int diff_thresh)
+cv::Mat  preprocess(const cv::Mat& row_img, LightColor color, int diff_thresh, const LightCfg& cfg)
 {
     // ---- 1. 颜色差分：挑出"目标颜色多、相反颜色少"的像素 ----
     // OpenCV 里图像是 BGR 顺序：ch[0]=B, ch[1]=G, ch[2]=R
@@ -48,8 +48,8 @@ cv::Mat  preprocess(const cv::Mat& row_img, LightColor color, int diff_thresh)
     cv::threshold(diff, mask, diff_thresh, 255, cv::THRESH_BINARY);
 
     // ---- 3. 形态学：先开运算去掉小噪点，再闭运算补上被阈值切断的灯条 ----
-    // 3x3 的核比灯条宽度（十几像素）小得多，不会把灯条整条抹掉
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, {3, 3});
+    // 核比灯条宽度（十几像素）小得多，不会把灯条整条抹掉
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, {cfg.morph, cfg.morph});
     cv::morphologyEx(mask, mask, cv::MORPH_OPEN,  kernel);
     cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
 
@@ -84,7 +84,7 @@ cv::Mat preprocess(const cv::Mat& row_img)
 }
 */
 
-std::vector<LightBar> findLights(const cv::Mat& binary_img)
+std::vector<LightBar> findLights(const cv::Mat& binary_img, const LightCfg& cfg)
 {
     //第一步，构建轮廓集
     std::vector<std::vector<cv::Point>> contours;
@@ -108,17 +108,17 @@ std::vector<LightBar> findLights(const cv::Mat& binary_img)
 
         //排除不合条件的light
         //第一，过小
-        if (width < 1.0 || contour.size() < 10) continue;
+        if (width < cfg.min_w || static_cast<float>(contour.size()) < cfg.min_pts) continue;
         //第二，过长过短
         //一般情况下，装甲板倾斜程度不会太高
-        if (length > 15.0 * width || length < 1.8 * width) continue;
+        if (length > cfg.max_aspect * width || length < cfg.min_aspect * width) continue;
         //第三，倾斜程度
         //长边的两点相减，得到长边方向向量,再解出与竖轴夹角
         const cv::Point2f dir = (edge01 > edge12) ? (pt[1] - pt[0]) : (pt[2] - pt[1]);
         float angle = std::atan2(dir.y, dir.x) * 180.0f / static_cast<float>(CV_PI);
         while (angle <= -90.0f) angle += 180.0f;
         while (angle >   90.0f) angle -= 180.0f;
-        if (90.0f - std::abs(angle) > 45.0) continue;
+        if (90.0f - std::abs(angle) > cfg.max_tilt) continue;
         
         //最后封装成bar
         LightBar bar ;
@@ -145,25 +145,25 @@ static float angleDiff(float a, float b)
     return d > 90.0f ? 180.0f - d : d;
 }
 
-bool isArmorPair(const LightBar& left,const LightBar& right)
+bool isArmorPair(const LightBar& left,const LightBar& right, const PairCfg& cfg)
 {
     //同一块装甲板的两根灯条长度近似相同
     const float length_ratio = std::min(left.length, right.length) / std::max(left.length, right.length);
-    if (length_ratio < 0.75f) return false;
+    if (length_ratio < cfg.min_len) return false;
 
     //角度接近
-    if (angleDiff(left.angle, right.angle) > 10.0f) return false;
+    if (angleDiff(left.angle, right.angle) > cfg.max_ang) return false;
     
     //中心水平应该相近（但做不到），有两中心的连线应与灯条长轴接近垂直
     const cv::Point2f delta = right.frame.center - left.frame.center;
     const float dist = std::sqrt(delta.x * delta.x + delta.y * delta.y);
     if (dist < 1.0f) return false;
     const float link_angle = std::atan2(delta.y, delta.x) * 180.0f / static_cast<float>(CV_PI);
-    if (std::abs(90.0f - angleDiff(left.angle, link_angle)) > 15.0f) return false;
+    if (std::abs(90.0f - angleDiff(left.angle, link_angle)) > cfg.max_perp) return false;
 
     //间距合理
     const float ratio = dist / (0.5f * (left.length + right.length));
-    if (ratio < 1.4f || ratio > 3.6f) return false;
+    if (ratio < cfg.min_gap || ratio > cfg.max_gap) return false;
     
     return true;
 }
@@ -215,7 +215,7 @@ static std::vector<cv::Point2f> correctCorners(const LightBar& left, const Light
     return { lb, lt, rt, rb };
 }
 
-std::vector<Armor> matchBar (std::vector<LightBar>& bars)
+std::vector<Armor> matchBar (std::vector<LightBar>& bars, const PairCfg& cfg)
 {
     //排序，按照中心位置
     std::sort(bars.begin(), bars.end(), 
@@ -223,7 +223,7 @@ std::vector<Armor> matchBar (std::vector<LightBar>& bars)
 
     std::vector<Armor> armors;
 
-    //把所有灯条两两配对，找出"可能是一块装甲板"的组合
+    //把所有灯条两两配对，找出一块装甲板的组合
     for (size_t i{}; i < bars.size() ; i++)
     {
         for (size_t j = i + 1; j < bars.size(); j++)
@@ -232,7 +232,7 @@ std::vector<Armor> matchBar (std::vector<LightBar>& bars)
             const LightBar& right  = bars[j];
 
 
-            if (isArmorPair(left,right))
+            if (isArmorPair(left, right, cfg))
             {
                 Armor armor ;
                 armor.leftBar = &left;
@@ -246,16 +246,16 @@ std::vector<Armor> matchBar (std::vector<LightBar>& bars)
     return armors;
 }
 
-cv::Mat extractNumber (cv::Mat& bgr ,Armor& armor,bool large_armor)
+cv::Mat extractNumber (cv::Mat& bgr, Armor& armor, const DigitCfg& cfg, bool large_armor)
 {
     //
     if (bgr.empty() || armor.corners.size() != 4) return cv::Mat();
 
-    //
-    const int warp_w  = large_armor ? 54 : 32;
-    const int warp_h  = 28;                         
-    const int top_y   = 7;     
-    const int bottom_y   = 19;                
+    // 规范图尺寸与灯条位置来自配置（小/大装甲板宽度不同）
+    const int warp_w   = large_armor ? cfg.w_large : cfg.w_small;
+    const int warp_h   = cfg.h;
+    const int top_y    = cfg.top_y;
+    const int bottom_y = cfg.bot_y;
     const std::vector<cv::Point2f> dst = {                   
     {0.0f, static_cast<float>(bottom_y)},                        
     {0.0f, static_cast<float>(top_y)},                         
@@ -268,7 +268,7 @@ cv::Mat extractNumber (cv::Mat& bgr ,Armor& armor,bool large_armor)
 
     cv::Mat gray;
     cv::cvtColor(warped, gray, cv::COLOR_BGR2GRAY); 
-    const cv::Mat roi = gray(cv::Rect((warp_w - 20)/2, 0,20, 28)).clone();
+    const cv::Mat roi = gray(cv::Rect((warp_w - cfg.roi_w) / 2, 0, cfg.roi_w, cfg.h)).clone();
 
     cv::threshold(roi, roi, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
 
@@ -279,14 +279,19 @@ cv::Mat extractNumber (cv::Mat& bgr ,Armor& armor,bool large_armor)
 
 
 //
-static std::vector<std::string> loadLabels(const std::string& model_path)
+static std::vector<std::string> loadLabels(const DigitCfg& cfg)
 {
     static const char* kFallback[] = {"1", "2", "3", "4", "5", "outpost", "guard", "base", "negative"};
     std::vector<std::string> labels(kFallback, kFallback + 9);
 
-    const size_t slash = model_path.find_last_of("/\\");
-    const std::string dir = (slash == std::string::npos) ? std::string(".") : model_path.substr(0, slash);
-    std::ifstream fin(dir + "/label.txt");
+    // 优先用配置里的 labels 路径；没有就退回模型同目录的 label.txt；再没有用内置顺序
+    std::ifstream fin(cfg.labels);
+    if (!fin && !cfg.model.empty())
+    {
+        const size_t slash = cfg.model.find_last_of("/\\");
+        const std::string dir = (slash == std::string::npos) ? std::string(".") : cfg.model.substr(0, slash);
+        fin.open(dir + "/label.txt");
+    }
     if (!fin) return labels;                    // 没有也能跑
 
     std::vector<std::string> read;
@@ -299,9 +304,10 @@ static std::vector<std::string> loadLabels(const std::string& model_path)
     return read.size() == 9 ? read : labels;
 }
 
-DigitResult classify(const cv::Mat& input_blob,const std::string& model_path)
+DigitResult classify(const cv::Mat& input_blob, const DigitCfg& cfg)
 {
     DigitResult result ;
+    const std::string& model_path = cfg.model;
     //启动model,输入
     static cv::dnn::Net net;
     static std::string loaded_path;
@@ -356,12 +362,12 @@ DigitResult classify(const cv::Mat& input_blob,const std::string& model_path)
     //选出max
     double max_logit {};
     cv::minMaxLoc(x, nullptr, &max_logit);
-    //
+    //防溢出式用指数归一到0~1
     cv::Mat expx;
     cv::exp(x - max_logit, expx);
     const cv::Mat prob = expx / cv::sum(expx)[0];
 
-    //
+    //best为最大的下标
     int best = 0;
     const float* p = prob.ptr<float>(0);   
     for (int i = 0; i < prob.cols; ++i)
@@ -369,8 +375,8 @@ DigitResult classify(const cv::Mat& input_blob,const std::string& model_path)
         if (p[i] > p[best]) best = i;
     }
 
-    //
-    const std::vector<std::string> labels = loadLabels(model_path);
+    //取label，记下置信度，封装
+    const std::vector<std::string> labels = loadLabels(cfg);
     result.cls   = best;
     result.conf  = prob.at<float>(0, best);
     result.label = labels[best];
@@ -396,7 +402,10 @@ static float quadIoU(const std::vector<cv::Point2f>& a, const std::vector<cv::Po
     return uni > 0.0f ? ia / uni : 0.0f;
 }
 
-void eraseIgnoreClasses(std::vector<ArmorDetection>& detections, bool use_digit_filter, float min_digit_conf)
+void eraseIgnoreClasses(std::vector<ArmorDetection>& detections,
+                        const DigitCfg& digit_cfg,
+                        const PairCfg& pair_cfg,
+                        bool use_digit_filter)
 {
     //剔除数字识别失败、置信度过低、位姿解算不可信的候选
     std::vector<ArmorDetection> candidate;
@@ -406,22 +415,22 @@ void eraseIgnoreClasses(std::vector<ArmorDetection>& detections, bool use_digit_
         {
             if (!detection.digit.valid) continue;
             if (detection.digit.label == "negative") continue;
-            if (detection.digit.conf < min_digit_conf) continue;   // 低置信度 = 不可信
+            if (detection.digit.conf < digit_cfg.conf_min) continue;   // 低置信度 = 不可信
         }
         if (!detection.pose.valid) continue;          // 深度为负、重投影误差过大等，直接丢掉
         candidate.push_back(detection);
     }
 
-    // 择优顺序：有数字就按数字置信度；没数字（或关掉数字过滤）就按"比例多接近 2.45"
-    auto score = [use_digit_filter](const ArmorDetection& detection)
+    // 择优排序 有数字就按数字置信度；没数字（或关掉数字过滤）就按"比例多接近 2.45"
+    auto score = [use_digit_filter, &pair_cfg](const ArmorDetection& detection)
     {
         if (use_digit_filter && detection.digit.valid) return detection.digit.conf;
-        return 1.0f / (1.0f + std::abs(centerRatio(detection.armor) - 2.4545f));
+        return 1.0f / (1.0f + std::abs(centerRatio(detection.armor) - pair_cfg.nominal));
     };
     std::sort(candidate.begin(), candidate.end(),
               [&](const ArmorDetection& a, const ArmorDetection& b) { return score(a) > score(b); });
 
-    // 第二关（贪心NMS重叠去重）：与已保留的候选"共用灯条"或"框重叠"就丢弃
+    // 贪心 与已保留的候选"共用灯条"或"框重叠"就丢弃
     std::vector<ArmorDetection> out;
     for (const auto& detection : candidate)
     {
@@ -443,9 +452,16 @@ void eraseIgnoreClasses(std::vector<ArmorDetection>& detections, bool use_digit_
 // ---------------- 传统方案的位姿解算封装 ----------------
 // 核心算法在 PnP_solver.cc（传统方案和神经网络方案共用）；
 // 这里只负责把 Armor 的四角点转交给它。
-PoseResult positionSolve(const Armor& armor, const CameraParams& cam, float armor_width_mm)
+PoseResult positionSolve(const Armor& armor, const CameraParams& cam, const ArmorCfg& cfg)
 {
-    return solveArmorPose(armor.corners, cam, armor_width_mm, 55.0f);
+    return solveArmorPose(armor.corners, cam,
+                          cfg.use_large ? cfg.large_w : cfg.small_w,
+                          cfg.bar_len, cfg.max_reproj);
+}
+
+LightColor parseColor(const std::string& name)
+{
+    return (name == "red") ? LightColor::RED : LightColor::BLUE;
 }
 
 // ---------------- 结果绘制（图片程序与视频程序共用） ----------------
