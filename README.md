@@ -28,7 +28,24 @@
 | ⑨ 分析 | 一张对比表 + 三条结论 | — |
 
 ---
+## 目录结构
 
+```
+.
+├── config/default.yaml            所有可调参数（内参、阈值、路径、门限）
+├── conventional_approach/         传统视觉方案
+│   ├── include/                   config.hpp / func.h / func.cc / input_image.cc / PnP_solver.h
+│   ├── src/                       main.cc（图片）/ main_video.cc（视频）/ PnP_solver.cc / config.cpp
+│   └── models/                    mlp.onnx + label.txt
+├── YOLO_approach/                 神经网络方案
+│   ├── include/                   func.h / preprocess.cc / model_use.cc / draw.cc
+│   ├── src/                       yoloArmorDetector.cc（图片）/ main_video.cc（视频）
+│   └── models/                    Infantry.onnx（FP16）/ Infantry_fp32.onnx（转换后）
+├── data/truth.csv                 真值（脚本生成，勿手改）
+├── scripts/                       模型转换 / 真值解析 / 误差评测
+├── Project_materials/             素材（不随仓库提交，需自己放）
+└── 视觉第二周作业_姓名.md          报告
+```
 ## 1. 环境
 
 | 依赖 | 版本 | 用途 |
@@ -397,58 +414,14 @@ PY
 
 ---
 
-## 11. 已知问题 / 预期偏差（**先看这段，能省很多时间**）
 
-### 11.1 图2 的素材与真值对不上（最需要注意）
 
-`data/truth.csv` 现在把 `Image_1791732303841_547.jpg` 配到 `图2.md`，但实测：
+### 11 模型与 `.gitignore` 的矛盾
 
-| 检查项 | 结果 |
-|---|---|
-| `图2.md` 的 armor_1 投影 | (659, 404)，落在右板**右侧的赛道上** |
-| `图2.md` 的 armor_2 投影 | (487, 426)，落在**两块板之间的空隙** |
-| 两块正面板相对检测中心的偏差 | 同向偏 **44~60 px**（图1/图3 只有 0.3~3 px） |
-| 同一张图换 `图3.md` 投影 | armor_4 → (425,415)，与左板中心 (427,417) 只差 **2.8 px** |
-
-结论：**`图2.md` 对应的原始帧不在这批素材里**（很可能抓图时刻与 /tf 记录时刻不重合）。
-所以：
-
-* 默认（`max_px=80`）下表里会多出三行图2 的数据，**它们是错配出来的，不要当成精度结论**；
-* 用 `--max-px 20` 复跑（§8.4），图2 的行会消失——这才是诚实的做法；
-* 报告里应写成"图2 素材待确认，未计入平均值"，并附上"投影是否落在装甲板上"的核对图。
-
-**怎么自己验证**：把 `图2.md` 的四块板中心按 `u = fx·X/Z+cx, v = fy·Y/Z+cy` 投到图上画十字，
-看它是否盖住装甲板的两根灯条；或用 `图2/内录图像_标注_第2次.jpg` 对照（那张图的框本身就是按 `图2.md` 投影画的，
-所以它本身也在板外，不能当独立参照）。
-
-### 11.2 素材文件名不一定和 `data/truth.csv` 一致
-
-`truth.csv` 是按 **图3 → `Image_1791695502223_335.jpg`** 生成的。如果你的素材包里图3 叫
-`Image_1791695496483_858.jpg`，那图3 的检测行就匹配不上真值（结果里会"没有检测结果"或整行缺失）。
-改 `scripts/parse_truth_md.py` 的 `MD_TO_IMAGE` 或直接改 `data/truth.csv` 的 `image` 列即可。
-
-### 11.3 模型与 `.gitignore` 的矛盾
-
-`.gitignore` 里写了 `models/`，但仓库里确实提交了 `mlp.onnx` 和 `Infantry.onnx`（早期强加）。
+`.gitignore` 里写了 `models/`，但仓库里确实提交了 `mlp.onnx` 和 `Infantry.onnx`（早期没写）。
 现状是：**`mlp.onnx` 有、`Infantry.onnx` 有（FP16）、`Infantry_fp32.onnx` 没有**。
 所以 §4 的转换步骤不能省。
 
-### 11.4 `reproj_px` 很小 ≠ 位置准
-
-单目 PnP 里，**深度 z 和物体点尺寸 W 是互相吸收的**：`z ≈ fx·W/d`。
-如果 `W` 写大了 10%，求解器会把 z 也放大 10%，四个角点照样严丝合缝，`reproj_px` 不会变大。
-所以 `0.02 px` 只说明"形状拟合得好"，z 的精度取决于 `config` 里 `armor.small_width_mm = 135`
-到底是不是"两灯条中心距"——这一项值得用实物/像素量一次确认。
-
-### 11.5 其它小坑
-
-| 现象 | 原因 | 处理 |
-|---|---|---|
-| 反复跑之后误差表变脏 | detections CSV 是**追加写** | 跑前 `rm` 掉（§6） |
-| YOLO 图片程序的标注图没生成 | 它把图写到 `output/debug/yolo_*.png`（相对**当前目录**） | 在仓库根先 `mkdir -p output/debug` |
-| `config/config.yaml` 不生效 | 程序只读 `config/default.yaml`（或 `--config` 指定的） | 忽略 `config.yaml`，改 `default.yaml` |
-| 视频跑完 z 永远 > 2.5 m 被全丢 | `yolo.max_dist_m` 门限 | 改成 0 关闭门限对比 |
-| 结果里没有图2 | 已经用 `--max-px 20` 收紧 | 预期行为（§11.1） |
 
 ---
 
@@ -518,33 +491,13 @@ python3 scripts/convert_onnx_fp16_to_fp32.py \
 
 ---
 
-## 附录 B：目录结构
 
-```
-.
-├── config/default.yaml            所有可调参数（内参、阈值、路径、门限）
-├── conventional_approach/         传统视觉方案
-│   ├── include/                   config.hpp / func.h / func.cc / input_image.cc / PnP_solver.h
-│   ├── src/                       main.cc（图片）/ main_video.cc（视频）/ PnP_solver.cc / config.cpp
-│   └── models/                    mlp.onnx + label.txt
-├── YOLO_approach/                 神经网络方案
-│   ├── include/                   func.h / preprocess.cc / model_use.cc / draw.cc
-│   ├── src/                       yoloArmorDetector.cc（图片）/ main_video.cc（视频）
-│   └── models/                    Infantry.onnx（FP16）/ Infantry_fp32.onnx（转换后）
-├── data/truth.csv                 真值（脚本生成，勿手改）
-├── scripts/                       模型转换 / 真值解析 / 误差评测
-├── Project_materials/             素材（不随仓库提交，需自己放）
-└── 视觉第二周作业_姓名.md          报告
-```
-
----
-
-## 附录 C：关键约定（看数字前先确认）
+## 附录 B：关键约定
 
 * **坐标系**：相机光学系，**x 右 / y 下 / z 前**（OpenCV 约定）；
 * **单位**：`tvec` 与真值都是 **m**（物体点内部用 mm，解算后 `/1000`）；
 * **参考点**：**装甲板几何中心**（不是灯条中点、不是底盘中心）；
-* **两套内参不能混**：静态图 960×720（`fx=fy=869.1169, cx=480, cy=360`，零畸变）；
+* **两套内参**：静态图 960×720（`fx=fy=869.1169, cx=480, cy=360`，零畸变）；
   视频 1440×1080（`fx=2362.28, fy=2336.19, cx=679.18, cy=529.07` + 5 个畸变系数）；
 * **PnP 物体点**：`(0, ±W/2, ±H/2) mm`（小板 W=135，大板 W=225，灯条长 H=55）；
-* **角点顺序**：传统 左灯条下→左灯条上→右灯条上→右灯条下；神经 左上→左下→右下→右上（喂 PnP 前重排）。
+* **角点顺序**：传统 左灯条下→左灯条上→右灯条上→右灯条下；神经 左上→左下→右下→右上（喂 PnP 前会重排）。
