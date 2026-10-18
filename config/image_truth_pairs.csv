@@ -1,0 +1,15 @@
+# 图片 ↔ 真值 的对应关系（误差表与自检共用的唯一配置）
+#
+# folder : 图片所在目录（Project_materials/含真值图像/<folder>/）
+# image  : 文件名
+# md     : 用哪份真值（Project_materials/含真值图像/<md>/<md>.md）
+# enabled: 1 = 参与误差表；0 = 只在 check_pairs.py 里核对，不进统计
+#
+# 2026-10-17 核对结论：图2 目录的 Image_1791732303841_547.jpg 与 图2.md 的投影对不上
+# （两块正面板同向偏 44~60px），而与 图3.md 的左板只差 2.8px，故暂不计入误差表。
+# 详见报告 3.3(6) 与 scripts/check_pairs.py 的输出。
+folder,image,md,enabled,note
+图1,Image_1791695492312_183.jpg,图1,1,图1 原图；armor_1/armor_4 正面
+图3,Image_1791695496483_858.jpg,图3,1,图3 原图；armor_3/armor_4 正面（本地文件名若为 Image_1791695502223_335.jpg 请改这一行）
+图2,Image_1791732303841_547.jpg,图3,0,图2 目录的原图：与 图2.md 不符、与 图3.md 差 6px；默认不计入
+图2,Image_1791732303841_547.jpg,图2,0,同一张图配 图2.md 的对照（用以复现报告 3.3(6) 的 44~60px 偏差）

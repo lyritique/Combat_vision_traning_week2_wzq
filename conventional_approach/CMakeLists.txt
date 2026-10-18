@@ -8,7 +8,7 @@ add_executable(armor_conventional_detector
     src/PnP_solver.cc
     include/func.cc
     include/input_image.cc
-    src/config.cpp
+    src/config.cc
 )
 
 # 视频批处理：531 帧 -> 标注视频 + CSV

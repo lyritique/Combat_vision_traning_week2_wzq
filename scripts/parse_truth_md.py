@@ -1,48 +1,38 @@
 #!/usr/bin/env python3
-"""从作业材料里的 图N.md 解析真值，生成 data/truth.csv。
+"""从 图N.md 解析真值，生成 data/truth.csv。
 
-数据来源：Project_materials/含真值图像/图N/图N.md 的 1.1 节
-  「装甲板 6D 真值位姿（相机光学系，单位 m / 度）」表格
-  取 tx, ty, tz 和「可见」列（正面=1，背面=0）。
+与旧版的区别
+------------
+* 对应关系不再写死在代码里的 MD_TO_IMAGE 字典，而是读 config/image_truth_pairs.csv：
+  一个图片 -> 一份真值，`enabled` 控制是否进误差表。改对应关系不用改代码。
+* 素材目录可以传参（--materials），不再假设仓库根目录下有 Project_materials/。
+* 图片文件不存在时报错并跳过，不再静默生成一张缺行的表。
 
 用法:
-    python3 scripts/parse_truth_md.py
+    python3 scripts/parse_truth_md.py --materials Project_materials/含真值图像
 
-图片和 md 的对应关系写在 MD_TO_IMAGE 里。图2 目前待确认（目录里的三张
-jpg 检测中心都和图2.md 的投影对不上），确认后把它加进映射即可。
+输出: data/truth.csv（列：image,armor,visible,tx,ty,tz；相机光学系，单位 m，参考点=装甲板中心）
 """
-
+import argparse
 import csv
 import os
 import re
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MATERIALS = os.path.join(ROOT, "Project_materials", "含真值图像")
-OUT = os.path.join(ROOT, "data", "truth.csv")
-
-# md 文件夹 -> 对应的原图文件名（做误差表时按这个 key 匹配检测结果）
-MD_TO_IMAGE = {
-    "图1": "Image_1791695492312_183.jpg",
-    "图3": "Image_1791695502223_335.jpg",
-    "图2": "Image_1791732303841_547.jpg",   # 待确认：目录里三张图的检测中心都和图2.md 投影对不上
-}
-
-# | armor_1 | 正面 | -0.174340 | +0.169600 | +3.794632 | ... |
 ROW_RE = re.compile(r"^\|\s*(armor_\d+)\s*\|\s*(正面|背面)\s*\|([^|]+)\|([^|]+)\|([^|]+)\|")
 
 
 def parse_md(path):
-    rows = []
-    in_pose_table = False
+    """只取 1.1 节（相机光学系）的 pose 表：armor / 可见 / tx / ty / tz。"""
+    rows, in_table = [], False
     with open(path, encoding="utf-8") as f:
         for line in f:
             if line.startswith("| 板 ") or line.startswith("|板|"):
-                in_pose_table = True
+                in_table = True
                 continue
-            if in_pose_table and line.startswith("|---"):
+            if in_table and line.startswith("|---"):
                 continue
-            if not in_pose_table:
+            if not in_table:
                 continue
             m = ROW_RE.match(line)
             if m:
@@ -50,41 +40,69 @@ def parse_md(path):
                 rows.append((armor.strip(), 1 if face == "正面" else 0,
                              float(tx), float(ty), float(tz)))
             elif line.strip() and not line.startswith("|"):
-                in_pose_table = False
+                in_table = False
     return rows
 
 
+def load_pairs(path):
+    with open(path, encoding="utf-8") as f:
+        return [r for r in csv.DictReader(l for l in f if not l.lstrip().startswith("#"))]
+
+
 def main():
-    if not os.path.isdir(MATERIALS):
-        print("找不到素材目录:", MATERIALS, file=sys.stderr)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--materials", default="Project_materials/含真值图像")
+    ap.add_argument("--pairs", default="config/image_truth_pairs.csv")
+    ap.add_argument("--out", default="data/truth.csv")
+    args = ap.parse_args()
+
+    if not os.path.isdir(args.materials):
+        print("找不到素材目录:", os.path.abspath(args.materials), file=sys.stderr)
+        print("用 --materials 指向包含 图1/图2/图3 的『含真值图像』目录", file=sys.stderr)
+        return 1
+    if not os.path.isfile(args.pairs):
+        print("找不到配置:", args.pairs, file=sys.stderr)
         return 1
 
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    total = 0
-    with open(OUT, "w", newline="", encoding="utf-8") as f:
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    total, skipped = 0, []
+    with open(args.out, "w", newline="", encoding="utf-8") as f:
         f.write("# 装甲板真值（相机光学系，单位 m；参考点 = 装甲板几何中心）\n")
-        f.write("# 由 scripts/parse_truth_md.py 从 图N.md 的 1.1 表自动生成，勿手改\n")
+        f.write("# 由 scripts/parse_truth_md.py 按 config/image_truth_pairs.csv 生成，勿手改\n")
         f.write("# 列：image,armor,visible,tx,ty,tz\n")
         w = csv.writer(f)
-        for md, image in MD_TO_IMAGE.items():
-            md_path = os.path.join(MATERIALS, md, f"{md}.md")
-            if not os.path.exists(md_path):
-                print("跳过不存在的文件:", md_path, file=sys.stderr)
+
+        for row in load_pairs(args.pairs):
+            folder, image, md = row["folder"].strip(), row["image"].strip(), row["md"].strip()
+            if row["enabled"].strip() not in ("1", "true", "yes"):
+                skipped.append(f"{folder}/{image}（enabled=0：{row['note'].strip()}）")
                 continue
+            img_path = os.path.join(args.materials, folder, image)
+            md_path = os.path.join(args.materials, md, md + ".md")
+            if not os.path.isfile(img_path):
+                print(f"[跳过] 图片不存在: {img_path}", file=sys.stderr)
+                skipped.append(f"{folder}/{image}（文件不存在）")
+                continue
+            if not os.path.isfile(md_path):
+                print(f"[跳过] 真值不存在: {md_path}", file=sys.stderr)
+                continue
+
             rows = parse_md(md_path)
             if not rows:
-                print("没解析到内容:", md_path, file=sys.stderr)
+                print(f"[跳过] 没解析到内容: {md_path}", file=sys.stderr)
                 continue
             f.write(f"# {md} -> {image}\n")
             for armor, visible, tx, ty, tz in rows:
-                w.writerow([image, armor, visible,
-                            f"{tx:+.6f}", f"{ty:+.6f}", f"{tz:+.6f}"])
+                w.writerow([image, armor, visible, f"{tx:+.6f}", f"{ty:+.6f}", f"{tz:+.6f}"])
                 total += 1
-            print(f"{md}: {len(rows)} 块装甲板 -> {image}")
+            print(f"{md} -> {image}：{len(rows)} 块")
 
-    print(f"共写入 {total} 行 -> {OUT}")
-    if "图2" not in MD_TO_IMAGE:
-        print("提示: 图2 还没加入映射（素材/真值配对待确认）。")
+    print(f"\n共写入 {total} 行 -> {args.out}")
+    if skipped:
+        print("未计入（如需纳入，改 config/image_truth_pairs.csv 的 enabled）：")
+        for s in skipped:
+            print("  - " + s)
+    print("提示：换素材后先跑 scripts/check_pairs.py，确认真值投影落在装甲板上再生成误差表。")
     return 0
 
 

@@ -15,6 +15,12 @@
   用相机内参把真值中心投到像素，和检测框中心（px,py）做一对一最近匹配；
   距离超过 --max-px 的检测记为误检，没被匹配上的可见真值记为漏检。
   误差定义：Δ = 计算值 - 真值（与作业要求一致）。
+
+与旧版的区别:
+  * --max-px 默认从 80 收紧到 20。80 px 会把"素材与真值不是同一帧"造成的整体偏移
+    （实测 44~60 px）当成正常匹配，安静地产出一张看着很合理的误差表。
+  * 匹配上的点如果像素差超过 --warn-px（默认 8），逐行标 [可疑] 并在末尾汇总，
+    提示先跑 scripts/check_pairs.py 核对素材与真值的对应关系。
 """
 
 import argparse
@@ -23,13 +29,9 @@ import math
 import os
 import sys
 
-import yaml
-
-# 静态图内参（默认值，实际从 config/default.yaml 读）
+# 静态图内参（960x720，零畸变）
 FX = FY = 869.1168824543144
 CX, CY = 480.0, 360.0
-
-DEFAULT_CONFIG = "config/default.yaml"
 
 
 def project(x, y, z):
@@ -96,30 +98,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("detections", nargs="+", help="detections_*.csv 路径")
     ap.add_argument("--truth", default="data/truth.csv")
-    ap.add_argument("--config", default=DEFAULT_CONFIG)
     ap.add_argument("--out-prefix", default="output/eval_images")
-    ap.add_argument("--max-px", type=float, default=None,
-                    help="检测中心与真值投影的最大匹配距离（像素）")
+    ap.add_argument("--max-px", type=float, default=20.0,
+                    help="检测中心与真值投影的最大匹配距离（像素），默认 20")
+    ap.add_argument("--warn-px", type=float, default=8.0,
+                    help="匹配上的行，像素差超过它就在表里标可疑，默认 8")
     args = ap.parse_args()
 
-    # 内参与匹配阈值从配置读，命令行仍可覆盖 --max-px
-    global FX, FY, CX, CY
-    max_px = 80.0
-    try:
-        with open(args.config, encoding="utf-8") as f:
-            text = f.read()
-        # OpenCV 写的 YAML 头是 "%YAML:1.0"，PyYAML 不认识，去掉这一行再解析
-        if text.startswith("%YAML"):
-            text = text.split("\n", 1)[1]
-        cfg = yaml.safe_load(text)
-        cam = cfg["camera"]["stills"]
-        FX = float(cam["fx"]); FY = float(cam["fy"])
-        CX = float(cam["cx"]); CY = float(cam["cy"])
-        max_px = float(cfg.get("eval", {}).get("max_px", max_px))
-    except (OSError, KeyError, TypeError) as e:
-        print(f"读取配置失败（{args.config}），使用内置内参: {e}", file=sys.stderr)
-    if args.max_px is not None:
-        max_px = args.max_px
+    if not os.path.exists(args.truth):
+        print("找不到真值表:", args.truth, file=sys.stderr)
+        print("先跑: python3 scripts/parse_truth_md.py --materials <含真值图像>", file=sys.stderr)
+        return 1
 
     truth = load_truth(args.truth)
     dets = load_detections(args.detections)
@@ -128,7 +117,7 @@ def main():
     for d in dets:
         by_image.setdefault(d["image"], []).append(d)
 
-    table, summary = [], {}
+    table, summary, suspect = [], {}, []
     for image in sorted(truth):
         if image not in by_image:
             print("没有检测结果:", image, file=sys.stderr)
@@ -141,22 +130,27 @@ def main():
             by_method.setdefault(d["method"], []).append(d)
 
         for method, mdets in sorted(by_method.items()):
-            matched, false_pos, missed = match_image(mdets, truth[image], max_px)
+            matched, false_pos, missed = match_image(mdets, truth[image], args.max_px)
 
             for t, d, dist in sorted(matched, key=lambda m: m[0]["armor"]):
                 cx, cy, cz = float(d["x_m"]), float(d["y_m"]), float(d["z_m"])
                 tx, ty, tz = t["t"]
                 dx, dy, dz = cx - tx, cy - ty, cz - tz
                 err3 = math.sqrt(dx * dx + dy * dy + dz * dz)
-                table.append(dict(image=image, method=method, armor=t["armor"],
-                                  x=cx, y=cy, z=cz, tx=tx, ty=ty, tz=tz,
-                                  dx=dx, dy=dy, dz=dz, err3=err3,
-                                  reproj=float(d["reproj_px"]),
-                                  label=d["label"], conf=float(d["conf"]),
-                                  px_match=dist))
+                row = dict(image=image, method=method, armor=t["armor"],
+                           x=cx, y=cy, z=cz, tx=tx, ty=ty, tz=tz,
+                           dx=dx, dy=dy, dz=dz, err3=err3,
+                           reproj=float(d["reproj_px"]),
+                           label=d["label"], conf=float(d["conf"]),
+                           px_match=dist)
+                table.append(row)
                 summary.setdefault(method, []).append(err3)
+                flag = ""
+                if dist > args.warn_px:
+                    flag = "  [可疑]"
+                    suspect.append(row)
                 print(f"  {method:11s} {t['armor']}: Δ=({dx:+.3f},{dy:+.3f},{dz:+.3f}) "
-                      f"三维={err3:.3f}m 重投影={float(d['reproj_px']):.2f}px 像素差={dist:.1f}px")
+                      f"三维={err3:.3f}m 重投影={float(d['reproj_px']):.2f}px 像素差={dist:.1f}px{flag}")
 
             for d in false_pos:
                 print(f"  {method} 误检（未匹配）: label={d['label']} conf={d['conf']}")
@@ -169,31 +163,41 @@ def main():
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["image", "method", "armor", "x", "y", "z", "tx", "ty", "tz",
-                    "dx", "dy", "dz", "err3d", "reproj_px", "label", "conf"])
+                    "dx", "dy", "dz", "err3d", "reproj_px", "label", "conf", "px_match"])
         for r in table:
             w.writerow([r["image"], r["method"], r["armor"],
                         f"{r['x']:.6f}", f"{r['y']:.6f}", f"{r['z']:.6f}",
                         f"{r['tx']:.6f}", f"{r['ty']:.6f}", f"{r['tz']:.6f}",
                         f"{r['dx']:+.4f}", f"{r['dy']:+.4f}", f"{r['dz']:+.4f}",
-                        f"{r['err3']:.4f}", f"{r['reproj']:.2f}", r["label"], f"{r['conf']:.4f}"])
+                        f"{r['err3']:.4f}", f"{r['reproj']:.2f}", r["label"],
+                        f"{r['conf']:.4f}", f"{r['px_match']:.1f}"])
 
     # ---- 输出 Markdown ----
     md_path = args.out_prefix + ".md"
     with open(md_path, "w", encoding="utf-8") as f:
-        f.write("| 图 | 方案 | 板号 | 计算 (x,y,z) m | 真值 (x,y,z) m | Δx | Δy | Δz | 三维误差 | 重投影 |\n")
-        f.write("|---|---|---|---|---|---|---|---|---|---|\n")
+        f.write("| 图 | 方案 | 板号 | 计算 (x,y,z) m | 真值 (x,y,z) m | Δx | Δy | Δz | 三维误差 | 重投影 | 像素差 |\n")
+        f.write("|---|---|---|---|---|---|---|---|---|---|---|\n")
         for r in table:
             f.write(f"| {r['image']} | {r['method']} | {r['armor']} | "
                     f"({r['x']:.3f}, {r['y']:.3f}, {r['z']:.3f}) | "
                     f"({r['tx']:.3f}, {r['ty']:.3f}, {r['tz']:.3f}) | "
                     f"{r['dx']:+.3f} | {r['dy']:+.3f} | {r['dz']:+.3f} | "
-                    f"**{r['err3']:.3f}** | {r['reproj']:.2f} px |\n")
+                    f"**{r['err3']:.3f}** | {r['reproj']:.2f} px | {r['px_match']:.1f} px |\n")
 
     print("\n== 汇总（平均三维误差）==")
     for method, errs in sorted(summary.items()):
         print(f"  {method:11s}: {sum(errs)/len(errs):.3f} m（{len(errs)} 块）")
+
+    if suspect:
+        print(f"\n[警告] {len(suspect)} 行匹配的像素差 > {args.warn_px} px：")
+        for r in suspect:
+            print(f"  - {r['image']} / {r['method']} / {r['armor']}: {r['px_match']:.1f} px")
+        print("  这些行很可能不是检测误差，而是素材与真值不是同一帧。")
+        print("  先跑: python3 scripts/check_pairs.py --materials <含真值图像>")
+
     print("\n已写出:", csv_path, "和", md_path)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
