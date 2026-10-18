@@ -46,6 +46,9 @@ int main(int argc, char** argv)
         return 1;
     }
 
+
+
+    //输入图片
     std::vector<std::string> image_paths;
     std::vector<cv::Mat> images = input_image(path, &image_paths);
     if (images.empty())
@@ -65,6 +68,7 @@ int main(int argc, char** argv)
 
     // 静态图用 cameraImages()；视频帧要换成 cameraVideo()
     const CameraParams cam = cameraImages();
+    
 
     for (size_t i = 0; i < images.size(); ++i)
     {

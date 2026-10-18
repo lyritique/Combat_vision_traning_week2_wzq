@@ -27,6 +27,7 @@
 
 int main(int argc, char** argv)
 {
+    //一堆参数，硬编码也可以满足任务需要
     const std::string video_path = (argc > 1) ? argv[1]
         : "/home/lyritique/project/Task2/Project_materials/相机内参与视频/Video_1791696012009_214.avi";
     const std::string out_video  = (argc > 2) ? argv[2] : "output/traditional_video.avi";
@@ -37,7 +38,7 @@ int main(int argc, char** argv)
     const int          thresh = 60;
     const bool use_digit_filter = true;            // 视频里 negative 要剔除
 
-    // 模型路径：优先用 CMake 传进来的绝对路径（不依赖当前工作目录）
+    // 模型路径：优先用 CMake 传进来的绝对路径
     std::string model_path = "models/mlp.onnx";
 #ifdef ARMOR_MODEL_DIR
     {
@@ -86,13 +87,15 @@ int main(int argc, char** argv)
 
     int frames = 0, frames_with = 0, cand_total = 0, kept_total = 0;
     std::map<std::string, int> number_count;
+
+    //开始计时
     const auto t0 = std::chrono::steady_clock::now();
 
     cv::Mat frame;
     while (cap.read(frame))
     {
         if (frame.empty()) break;
-
+        //闪电三连鞭
         cv::Mat mask = preprocess(frame, color, thresh);
         std::vector<LightBar> bars = findLights(mask);
         std::vector<Armor> armors = matchBar(bars);
@@ -116,6 +119,7 @@ int main(int argc, char** argv)
         const int kept = static_cast<int>(detections.size());
         kept_total += kept;
         if (kept > 0) ++frames_with;
+        //AI写的统计很详尽啊
 
         for (const auto& d : detections)
         {
@@ -138,6 +142,7 @@ int main(int argc, char** argv)
     writer.release();
     csv.close();
 
+    //结束计时
     const double sec = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - t0).count();
     const double keep_rate = cand_total > 0 ? 100.0 * kept_total / cand_total : 0.0;

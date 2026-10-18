@@ -101,7 +101,7 @@ int main(int argc, char** argv)
             std::cout << "\n";
         }
 
-        // 5) 剔除 negative / 识别失败 / 解算不可信 / 重复
+        // 5) 剔除 negative 、 识别失败 、 解算不可信 、 重复
         const size_t before = detections.size();
         eraseIgnoreClasses(detections, use_digit_filter);
         std::cout << "  剔除后剩 " << detections.size() << "/" << before << " 块\n";
@@ -116,6 +116,7 @@ int main(int argc, char** argv)
             cv::Point2f c(0.0f, 0.0f);
             for (const auto& p : d.armor.corners) c += p;
             c *= 0.25f;
+            //写csv
             det_csv << image_name << ",traditional," << j << ','
                     << d.digit.label << ',' << d.digit.conf << ','
                     << d.pose.tvec[0] << ',' << d.pose.tvec[1] << ',' << d.pose.tvec[2] << ','
@@ -143,6 +144,6 @@ int main(int argc, char** argv)
             std::cerr << "  imshow 失败，直接看图：" << path << "\n";
         }
     }
-
+    det_csv.close();
     return 0;
 }

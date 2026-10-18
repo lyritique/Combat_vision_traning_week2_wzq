@@ -49,7 +49,7 @@ int main(int argc, char** argv)
 
     // 距离门限：本视频里真装甲板在 1.4~1.6m，而背景误检集中在 4m 以外
     // （货架、横幅上的图案）。用 2.5m 把远处误检挡掉；换场景时改这里。
-    const float max_pose_dist = 2.5f;
+    //const float max_pose_dist = 2.5f;
 
     for (const auto& p : {out_video, out_csv})
     {
@@ -113,7 +113,7 @@ int main(int argc, char** argv)
         {
             const PoseResult& p = poses[j];
             if (!p.valid) continue;
-            if (p.tvec[2] > max_pose_dist) { ++far_dropped; continue; }
+            //if (p.tvec[2] > max_pose_dist) { ++far_dropped; continue; }
             kept_dets.push_back(dets[j]);
             kept_poses.push_back(p);
         }
@@ -155,7 +155,7 @@ int main(int argc, char** argv)
               << "（" << (frames ? 100.0 * frames_with / frames : 0.0) << "%）\n"
               << "  检测总数      : " << det_total
               << "（距离门限内保留 " << kept_total << "，>"
-              << max_pose_dist << "m 丢弃 " << far_dropped << "）\n"
+              /*<< max_pose_dist */<< "m 丢弃 " << far_dropped << "）\n"
               << "  类别分布      : ";
     for (const auto& kv : cls_count) std::cout << kv.first << "=" << kv.second << " ";
     std::cout << "\n  颜色分布      : ";

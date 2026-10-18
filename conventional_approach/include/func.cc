@@ -223,7 +223,7 @@ std::vector<Armor> matchBar (std::vector<LightBar>& bars)
 
     std::vector<Armor> armors;
 
-    //把所有灯条两两配对，找出"可能是一块装甲板"的组合
+    //把所有灯条两两配对，找出一块装甲板的组合
     for (size_t i{}; i < bars.size() ; i++)
     {
         for (size_t j = i + 1; j < bars.size(); j++)
@@ -356,12 +356,12 @@ DigitResult classify(const cv::Mat& input_blob,const std::string& model_path)
     //选出max
     double max_logit {};
     cv::minMaxLoc(x, nullptr, &max_logit);
-    //
+    //防溢出式用指数归一到0~1
     cv::Mat expx;
     cv::exp(x - max_logit, expx);
     const cv::Mat prob = expx / cv::sum(expx)[0];
 
-    //
+    //best为最大的下标
     int best = 0;
     const float* p = prob.ptr<float>(0);   
     for (int i = 0; i < prob.cols; ++i)
@@ -369,7 +369,7 @@ DigitResult classify(const cv::Mat& input_blob,const std::string& model_path)
         if (p[i] > p[best]) best = i;
     }
 
-    //
+    //取label，记下置信度，封装
     const std::vector<std::string> labels = loadLabels(model_path);
     result.cls   = best;
     result.conf  = prob.at<float>(0, best);
@@ -412,7 +412,7 @@ void eraseIgnoreClasses(std::vector<ArmorDetection>& detections, bool use_digit_
         candidate.push_back(detection);
     }
 
-    // 择优顺序：有数字就按数字置信度；没数字（或关掉数字过滤）就按"比例多接近 2.45"
+    // 择优排序 有数字就按数字置信度；没数字（或关掉数字过滤）就按"比例多接近 2.45"
     auto score = [use_digit_filter](const ArmorDetection& detection)
     {
         if (use_digit_filter && detection.digit.valid) return detection.digit.conf;
@@ -421,7 +421,7 @@ void eraseIgnoreClasses(std::vector<ArmorDetection>& detections, bool use_digit_
     std::sort(candidate.begin(), candidate.end(),
               [&](const ArmorDetection& a, const ArmorDetection& b) { return score(a) > score(b); });
 
-    // 第二关（贪心NMS重叠去重）：与已保留的候选"共用灯条"或"框重叠"就丢弃
+    // 贪心 与已保留的候选"共用灯条"或"框重叠"就丢弃
     std::vector<ArmorDetection> out;
     for (const auto& detection : candidate)
     {
